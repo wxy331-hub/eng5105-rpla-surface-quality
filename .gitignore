@@ -8,7 +8,10 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-tmp/
+# pytest.ini pins --basetemp here. pytest creates the leaf but not its parent,
+# so the directory itself has to survive a clone or every tmp_path test errors.
+tmp/*
+!tmp/.gitkeep
 
 # IDE and operating-system files
 .vscode/*

@@ -1,0 +1,12 @@
+{
+  "batch_id": "W4-OFFLINE-FAULT-001",
+  "width_px": 640,
+  "height_px": 360,
+  "seed": 5105,
+  "roi_px": [28, 140, 584, 80],
+  "threshold": 145,
+  "min_area_px": 80,
+  "stale_after_s": 1.0,
+  "disconnect_after_s": 2.0,
+  "recovery_frames": 3
+}

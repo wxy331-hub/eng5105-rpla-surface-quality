@@ -1,0 +1,34 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python caches and test artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+tmp/
+
+# IDE and operating-system files
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local runtime output
+data/input/*
+!data/input/.gitkeep
+!data/input/pla_white_filament.jpg
+!data/input/plastic_surface_texture.jpg
+!data/input/scratched_dirty_plastic.jpg
+data/output/*
+!data/output/.gitkeep
+# Appendix A of the proposal report cites these two machine-readable traces as
+# formal evidence records [42] and [43]. They must stay in the repository or the
+# report's evidence chain points at files nobody else can obtain.
+!data/output/latency/
+!data/output/network_fault/
+logs/

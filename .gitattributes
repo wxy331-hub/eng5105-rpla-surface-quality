@@ -1,0 +1,27 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+
+# Byte-exact evidence. Appendix A of the proposal report and the artifact
+# manifest record a SHA-256 for each of these files, so Git must store them
+# unchanged: any end-of-line normalisation silently invalidates every recorded
+# hash and breaks the report's traceability claim for anyone who clones this.
+ENG5105_Proposal_Design_Report_EN.md -text
+ENG5105_Proposal_Design_Report_ZH.md -text
+RESOLUTION_TEST_RESULTS_2026-08-11.md -text
+LIVE_PATH_TEST_RESULTS_2026-08-11.md -text
+WEEK3_OFFLINE_IMPLEMENTATION.md -text
+WEEK4_OFFLINE_IMPLEMENTATION.md -text
+config/live_service.json -text
+src/live_service.py -text
+src/week3/vision.py -text
+data/output/latency/latency_20260811.json -text
+data/output/network_fault/network_fault_20260811.json -text
+

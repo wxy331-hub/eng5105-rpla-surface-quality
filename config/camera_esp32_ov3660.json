@@ -1,0 +1,25 @@
+{
+  "source_name": "ESP32S3_OV3660",
+  "sensor_model": "OV3660",
+  "sensor_model_status": "confirmed",
+  "native_max_width_px": 2048,
+  "native_max_height_px": 1536,
+  "framesize_control_value": 19,
+  "framesize_name": "QXGA",
+  "stream_url": "http://<ESP32_IP>:81/stream",
+  "expected_width_px": 2048,
+  "expected_height_px": 1536,
+  "recommended_live_default": "SVGA",
+  "resolution_profiles": {
+    "VGA": {"framesize_control_value": 10, "width_px": 640, "height_px": 480},
+    "SVGA": {"framesize_control_value": 11, "width_px": 800, "height_px": 600},
+    "XGA": {"framesize_control_value": 12, "width_px": 1024, "height_px": 768},
+    "SXGA": {"framesize_control_value": 14, "width_px": 1280, "height_px": 1024},
+    "UXGA": {"framesize_control_value": 15, "width_px": 1600, "height_px": 1200},
+    "QXGA": {"framesize_control_value": 19, "width_px": 2048, "height_px": 1536}
+  },
+  "test_duration_s": 30,
+  "open_timeout_ms": 5000,
+  "read_timeout_ms": 3000,
+  "notes": "CameraWebServer identified the physical sensor as OV3660. QXGA 2048x1536 continuous MJPEG and OpenCV acquisition were verified on physical hardware; only one live stream client should connect at a time."
+}

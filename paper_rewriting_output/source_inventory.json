@@ -1,0 +1,14 @@
+[
+  {"id":"REF001","file":"Electrical teams proposal report rubric 2026.pdf","type":"official_rubric"},
+  {"id":"REF002","file":"Concept design_ Discipline specific content.docx.pdf","type":"official_instruction"},
+  {"id":"REF003","file":"ENG5105 Components - With pictures 2026.pdf","type":"official_component_list"},
+  {"id":"REF004","file":"ENG5105-ENG5106 S2 2026 - Project Briefs_Rev0.pdf","type":"official_project_brief"},
+  {"id":"REF005","file":"ENG5105_rPLA表面质量_概念设计方案.md","type":"working_design_synthesis"},
+  {"id":"REF006","file":"PLAN_B_FINAL_ARCHITECTURE_2026-08-11.md","type":"architecture_decision"},
+  {"id":"REF007","file":"RESOLUTION_TEST_RESULTS_2026-08-11.md","type":"test_record"},
+  {"id":"REF008","file":"LIVE_PATH_TEST_RESULTS_2026-08-11.md","type":"test_record"},
+  {"id":"REF009","file":"WEEK3_OFFLINE_IMPLEMENTATION.md","type":"implementation_record"},
+  {"id":"REF010","file":"WEEK4_OFFLINE_IMPLEMENTATION.md","type":"implementation_record"},
+  {"id":"REF011","file":"ESP32S3_OV3660_第二周测试说明.md","type":"test_note"},
+  {"id":"REF012","file":"LIVE_INSPECTION_SERVICE.md","type":"interface_note"}
+]

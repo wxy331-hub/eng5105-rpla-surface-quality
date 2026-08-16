@@ -1,0 +1,25 @@
+{
+  "name": "gui-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:live": "pnpm run sync:live && vite --mode live",
+    "sync:live": "node scripts/sync-week4-live-evidence.mjs",
+    "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "preview": "vite preview",
+    "test:evidence": "node --test tests/offline-evidence.test.mjs tests/live-evidence.test.mjs",
+    "test:sites": "node --test tests/sites-worker.test.mjs"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@vitejs/plugin-react": "5.0.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "recharts": "^3.10.1",
+    "vite": "6.4.2"
+  }
+}

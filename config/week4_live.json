@@ -1,0 +1,8 @@
+{
+  "batch_id": "RPLA-PLANB-OV3660-QXGA-001",
+  "source_name": "ESP32S3_OV3660",
+  "frame_count": 12,
+  "roi_px": [650, 120, 500, 1350],
+  "threshold": 145,
+  "min_area_px": 120
+}

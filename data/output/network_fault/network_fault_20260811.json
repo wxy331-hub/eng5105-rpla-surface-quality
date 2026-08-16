@@ -1,0 +1,23 @@
+﻿{
+    "evidence_level":  "LIVE_REAL_NETWORK_FAULT_AND_RECOVERY",
+    "tested_at_utc":  "2026-08-11T07:30:53.4568276Z",
+    "camera_path":  "PLAN_B_ESP32S3_OV3660_MJPEG",
+    "resolution":  "SVGA 800x600",
+    "fault_method":  "Temporary outbound firewall block scoped to the verified resident-service executable and camera IP",
+    "blocked_program":  "E:\\Python312\\python.exe",
+    "initial_state":  "HEALTHY",
+    "fault_state":  "RECONNECTING",
+    "blocked_state_after_hold":  "RECONNECTING",
+    "automatic_actions_allowed_during_fault":  false,
+    "detection_active_during_fault":  false,
+    "frames_before_fault":  2266,
+    "frames_when_fault_observed":  2299,
+    "frames_during_fault":  2299,
+    "frames_advanced_while_fault_held":  0,
+    "fault_detection_latency_ms":  654.64,
+    "fault_hold_seconds":  4,
+    "recovered_state":  "HEALTHY",
+    "frames_after_recovery":  2302,
+    "recovery_latency_ms":  5689.35,
+    "firewall_rule_removed":  true
+}

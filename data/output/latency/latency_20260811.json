@@ -1,0 +1,98 @@
+{
+  "evidence_level": "LIVE_CAMERA_CONTROL_TO_API_IMAGE_RESPONSE",
+  "tested_at_utc": "2026-08-11T07:27:50.295+00:00",
+  "camera_path": "PLAN_B_ESP32S3_OV3660_MJPEG",
+  "resolution": "SVGA 800x600",
+  "api_base_url": "http://127.0.0.1:8765",
+  "camera_control_base_url": "http://172.20.10.2",
+  "trials": 5,
+  "transition_count": 10,
+  "median_latency_ms": 101.32,
+  "p95_latency_ms": 222.99,
+  "minimum_latency_ms": 87.12,
+  "maximum_latency_ms": 222.99,
+  "transitions": [
+    {
+      "trial": 1,
+      "direction": "brightness_1_to_-2",
+      "latency_ms": 222.99,
+      "frame_id": 232,
+      "mean_luma": 116.37,
+      "mean_luma_delta": 15.81
+    },
+    {
+      "trial": 1,
+      "direction": "brightness_-2_to_1",
+      "latency_ms": 184.93,
+      "frame_id": 233,
+      "mean_luma": 88.76,
+      "mean_luma_delta": 27.61
+    },
+    {
+      "trial": 2,
+      "direction": "brightness_1_to_-2",
+      "latency_ms": 95.18,
+      "frame_id": 238,
+      "mean_luma": 134.59,
+      "mean_luma_delta": 45.82
+    },
+    {
+      "trial": 2,
+      "direction": "brightness_-2_to_1",
+      "latency_ms": 87.12,
+      "frame_id": 239,
+      "mean_luma": 128.34,
+      "mean_luma_delta": 6.24
+    },
+    {
+      "trial": 3,
+      "direction": "brightness_1_to_-2",
+      "latency_ms": 107.46,
+      "frame_id": 245,
+      "mean_luma": 134.61,
+      "mean_luma_delta": 6.27
+    },
+    {
+      "trial": 3,
+      "direction": "brightness_-2_to_1",
+      "latency_ms": 131.29,
+      "frame_id": 246,
+      "mean_luma": 88.71,
+      "mean_luma_delta": 45.9
+    },
+    {
+      "trial": 4,
+      "direction": "brightness_1_to_-2",
+      "latency_ms": 121.24,
+      "frame_id": 253,
+      "mean_luma": 134.67,
+      "mean_luma_delta": 45.95
+    },
+    {
+      "trial": 4,
+      "direction": "brightness_-2_to_1",
+      "latency_ms": 90.59,
+      "frame_id": 254,
+      "mean_luma": 110.13,
+      "mean_luma_delta": 24.54
+    },
+    {
+      "trial": 5,
+      "direction": "brightness_1_to_-2",
+      "latency_ms": 88.83,
+      "frame_id": 260,
+      "mean_luma": 134.44,
+      "mean_luma_delta": 24.31
+    },
+    {
+      "trial": 5,
+      "direction": "brightness_-2_to_1",
+      "latency_ms": 94.06,
+      "frame_id": 262,
+      "mean_luma": 88.92,
+      "mean_luma_delta": 45.52
+    }
+  ],
+  "scope": "Camera control request through physical OV3660, Wi-Fi MJPEG, Python processing, and resident API JPEG publication.",
+  "not_included": "Scene/exposure timestamp and browser paint latency; the OV3660 MJPEG stream exposes no sensor capture timestamp."
+}

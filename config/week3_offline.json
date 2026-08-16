@@ -1,0 +1,9 @@
+{
+  "batch_id": "W3-SYNTHETIC-001",
+  "frame_count": 8,
+  "width_px": 640,
+  "height_px": 360,
+  "seed": 5105,
+  "threshold": 145,
+  "min_area_px": 80
+}

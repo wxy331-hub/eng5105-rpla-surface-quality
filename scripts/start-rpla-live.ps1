@@ -1,5 +1,5 @@
 param(
-    [string]$CameraIp = "172.20.10.2",
+    [string]$CameraIp = "",
     [ValidateSet("VGA", "SVGA", "XGA", "SXGA", "UXGA", "QXGA")]
     [string]$Resolution = "SVGA",
     [switch]$NoBrowser
@@ -79,6 +79,98 @@ function Wait-CameraFrame {
     throw "The Python service started, but no camera frame arrived within $TimeoutSeconds seconds. Close any ESP32 CameraWebServer preview and try again."
 }
 
+function Get-LocalIPv4Address {
+    return @(
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike "127.*" } |
+            Select-Object -ExpandProperty IPAddress
+    )
+}
+
+function Test-CameraEndpoint {
+    param([string]$Ip, [int]$TimeoutSeconds = 3)
+    try {
+        $status = Invoke-RestMethod -Uri "http://$Ip/status" -TimeoutSec $TimeoutSeconds
+        return ($null -ne $status.framesize)
+    } catch {
+        return $false
+    }
+}
+
+function Find-CameraOnLocalSubnets {
+    # The ESP32 takes a DHCP lease from the hotspot, so its address moves whenever
+    # the network changes. Probe port 81 (the CameraWebServer stream) across each
+    # local subnet, then confirm the survivors actually answer /status.
+    $localAddresses = Get-LocalIPv4Address
+    $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.IPAddress -notlike "127.*" -and
+            $_.IPAddress -notlike "169.254.*" -and
+            $_.PrefixLength -ge 24
+        }
+
+    $reachable = @()
+    foreach ($adapter in $adapters) {
+        $parts = $adapter.IPAddress.Split(".")
+        $blockSize = [int][math]::Pow(2, 32 - $adapter.PrefixLength)
+        $networkLast = [int]$parts[3] - ([int]$parts[3] % $blockSize)
+        $subnetPrefix = "$($parts[0]).$($parts[1]).$($parts[2])"
+
+        $pending = @()
+        for ($octet = $networkLast + 1; $octet -le $networkLast + $blockSize - 2; $octet++) {
+            $candidate = "$subnetPrefix.$octet"
+            if ($localAddresses -contains $candidate) { continue }
+            $client = New-Object System.Net.Sockets.TcpClient
+            $pending += [pscustomobject]@{
+                Ip     = $candidate
+                Client = $client
+                Handle = $client.BeginConnect($candidate, 81, $null, $null)
+            }
+        }
+        Start-Sleep -Milliseconds 900
+        foreach ($probe in $pending) {
+            if ($probe.Handle.IsCompleted) {
+                try {
+                    $probe.Client.EndConnect($probe.Handle)
+                    $reachable += $probe.Ip
+                } catch { }
+            }
+            $probe.Client.Close()
+        }
+    }
+
+    return @($reachable | Where-Object { Test-CameraEndpoint -Ip $_ })
+}
+
+function Resolve-CameraIp {
+    param([string]$Requested, [string]$Configured)
+    $localAddresses = Get-LocalIPv4Address
+
+    if ($Requested) {
+        if ($localAddresses -contains $Requested) {
+            throw "-CameraIp $Requested is this computer's own address, not the camera. The hotspot reassigns leases when the network changes, so an address that used to belong to the ESP32 can end up on this machine. Run the script without -CameraIp to discover the camera."
+        }
+        return $Requested
+    }
+
+    if ($Configured -and ($localAddresses -notcontains $Configured) -and (Test-CameraEndpoint -Ip $Configured)) {
+        return $Configured
+    }
+
+    Write-Host "Looking for the ESP32 camera on the local network..." -ForegroundColor Cyan
+    # @() matters: a single-element array unrolls to a scalar on return, and
+    # indexing a bare string would yield its first character instead of the address.
+    $found = @(Find-CameraOnLocalSubnets)
+    if ($found.Count -eq 1) {
+        Write-Host "Found the camera at $($found[0])." -ForegroundColor Green
+        return $found[0]
+    }
+    if ($found.Count -gt 1) {
+        throw "More than one ESP32 camera answered: $($found -join ', '). Re-run with -CameraIp <address> to choose one."
+    }
+    throw "No ESP32 camera answered on any local subnet. Check that the board is powered, that its firmware carries the current Wi-Fi credentials (re-flash after changing the SSID or password), and that this computer is on the same network. Pass -CameraIp <address> to skip discovery."
+}
+
 function Find-NodeExecutable {
     $systemNode = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($systemNode) { return $systemNode.Source }
@@ -88,6 +180,8 @@ function Find-NodeExecutable {
 
     throw "Node.js is required to start the GUI. Install Node.js 20 or later, then run START_RPLA_LIVE.cmd again."
 }
+
+$CameraIp = Resolve-CameraIp -Requested $CameraIp -Configured ([string]$serviceConfig.camera_ip)
 
 Stop-ProjectListener -Port 8765
 Stop-ProjectListener -Port 5173
@@ -113,7 +207,7 @@ $env:RPLA_RESOLUTION = $Resolution
 $env:RPLA_FRAMESIZE = [string]$frameSizeValue
 
 Start-Process -FilePath $python `
-    -ArgumentList @("-m", "uvicorn", "src.live_service:app", "--app-dir", $projectRoot, "--host", "127.0.0.1", "--port", "8765") `
+    -ArgumentList @("-m", "uvicorn", "src.live_service:app", "--app-dir", "`"$projectRoot`"", "--host", "127.0.0.1", "--port", "8765") `
     -WorkingDirectory $projectRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $backendLog `
@@ -128,7 +222,7 @@ if (-not (Test-Path -LiteralPath $viteEntry)) {
     throw "GUI dependencies are missing: $viteEntry"
 }
 Start-Process -FilePath $node `
-    -ArgumentList @($viteEntry, "--mode", "live", "--host", "127.0.0.1", "--port", "5173") `
+    -ArgumentList @("`"$viteEntry`"", "--mode", "live", "--host", "127.0.0.1", "--port", "5173") `
     -WorkingDirectory $guiRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $guiLog `

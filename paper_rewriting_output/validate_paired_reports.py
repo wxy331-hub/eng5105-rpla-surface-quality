@@ -90,7 +90,7 @@ def check() -> list[str]:
                 f"{language} reference list is not contiguous from 1 through its final entry"
             )
 
-    for kind, expected in (("table", list(range(1, 21))), ("figure", list(range(1, 4)))):
+    for kind, expected in (("table", list(range(1, 22))), ("figure", list(range(1, 4)))):
         en_numbers = caption_numbers(en, kind)
         zh_numbers = caption_numbers(zh, kind)
         if en_numbers != expected:
@@ -163,6 +163,12 @@ def check() -> list[str]:
     if en_labels != zh_labels:
         failures.append(f"Evidence-label counts differ: EN={dict(en_labels)}, ZH={dict(zh_labels)}")
 
+    # Plan A is the selected concept but its hardware is not ordered; neither
+    # language may imply otherwise, and no interim figure may be relabelled.
+    for language, text in (("EN", en), ("ZH", zh)):
+        if "on order" in text or "已下单" in text:
+            failures.append(f"{language} states the hardware is on order, which is not the case")
+
     return failures
 
 
@@ -184,7 +190,7 @@ def main() -> int:
         f"- paired citations: {citation_count} expanded uses; contiguous first-citation "
         f"order 1..{reference_count}"
     )
-    print("- captions: Tables 1..20 and Figures 1..3 in both reports")
+    print("- captions: Tables 1..21 and Figures 1..3 in both reports")
     print(
         f"- structures: Sections 1..12, three Mermaid diagrams, {equation_count} "
         "identical display equations and balanced math fences"

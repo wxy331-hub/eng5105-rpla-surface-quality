@@ -12,10 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 EN = ROOT / "ENG5105_Proposal_Design_Report_EN.md"
 ZH = ROOT / "ENG5105_Proposal_Design_Report_ZH.md"
-CITE = re.compile(r"\[(\d+)\](?:\s*[–-]\s*\[(\d+)\])?")
-REFERENCE_ENTRY = re.compile(
-    r"^\[(\d+)\]\s+(.*?)(?=^\[\d+\]\s+|\Z)", re.MULTILINE | re.DOTALL
-)
+# APA 7th: a citation is a parenthetical whose every semicolon-separated chunk
+# is "Author, Year" with optional extra years. Both bracket forms appear because
+# the Chinese report uses full-width parentheses.
+PARENTHETICAL = re.compile(r"[(（]([^()（）]+)[)）]")
+YEAR = re.compile(r"^(?:19|20)\d{2}[a-z]?$")
+REFERENCE_ENTRY = re.compile(r"(?m)^(?P<author>[^\n]+?)\. \((?P<year>(?:19|20)\d{2}[a-z]?)\)\. (?P<rest>[^\n]+)$")
 
 
 def body_and_refs(text: str) -> tuple[str, str]:
@@ -25,21 +27,33 @@ def body_and_refs(text: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def expanded_citations(body: str) -> list[int]:
-    result: list[int] = []
-    for match in CITE.finditer(body):
-        start = int(match.group(1))
-        end = int(match.group(2) or start)
-        step = 1 if end >= start else -1
-        result.extend(range(start, end + step, step))
-    return result
+def citation_keys(body: str) -> list[tuple[str, str]]:
+    """Return every (label, year) an in-text citation names, in document order."""
+    keys: list[tuple[str, str]] = []
+    for match in PARENTHETICAL.finditer(body):
+        chunks = [chunk.strip() for chunk in match.group(1).split(";")]
+        parsed: list[tuple[str, str]] = []
+        for chunk in chunks:
+            parts = [part.strip() for part in chunk.split(",")]
+            if len(parts) < 2 or not all(YEAR.match(part) for part in parts[1:]):
+                parsed = []
+                break
+            parsed.extend((parts[0], year) for year in parts[1:])
+        keys.extend(parsed)
+    return keys
 
 
-def reference_entries(refs: str) -> list[tuple[int, str]]:
-    """Return numbered references with whitespace-normalized entry text."""
+def first_surname(label: str) -> str:
+    """The surname an entry must start with for a label to resolve to it."""
+    return label.replace(" et al.", "").split(" & ")[0].strip()
+
+
+def reference_entries(refs: str) -> list[tuple[str, str, str]]:
+    """Return (author, year, normalized full entry) for each reference."""
     return [
-        (int(number), " ".join(entry.split()))
-        for number, entry in REFERENCE_ENTRY.findall(refs.strip())
+        (match.group("author").strip(), match.group("year"),
+         " ".join(match.group(0).split()))
+        for match in REFERENCE_ENTRY.finditer(refs.strip())
     ]
 
 
@@ -63,34 +77,35 @@ def check() -> list[str]:
     en_body, en_refs = body_and_refs(en)
     zh_body, zh_refs = body_and_refs(zh)
 
-    en_seq = expanded_citations(en_body)
-    zh_seq = expanded_citations(zh_body)
+    en_seq = citation_keys(en_body)
+    zh_seq = citation_keys(zh_body)
     if en_seq != zh_seq:
-        failures.append("Numeric citation sequence differs between English and Chinese")
+        failures.append("Citation sequence differs between English and Chinese")
 
     en_entries = reference_entries(en_refs)
     zh_entries = reference_entries(zh_refs)
     if not en_entries:
         failures.append("Reference list is empty")
-    if en_entries != zh_entries:
+    if [entry[2] for entry in en_entries] != [entry[2] for entry in zh_entries]:
         failures.append("Normalized reference entries differ between English and Chinese")
 
-    expected_references = list(range(1, len(en_entries) + 1))
-    first_citation_order = list(dict.fromkeys(en_seq))
-    if first_citation_order != expected_references:
-        failures.append(
-            "English citations are not in contiguous first-citation order matching "
-            "the reference list"
-        )
+    sort_keys = [(author.lower(), year) for author, year, _ in en_entries]
+    if sort_keys != sorted(sort_keys):
+        failures.append("Reference list is not in alphabetical order")
 
-    for language, entries in (("EN", en_entries), ("ZH", zh_entries)):
-        numbers = [number for number, _ in entries]
-        if numbers != expected_references:
-            failures.append(
-                f"{language} reference list is not contiguous from 1 through its final entry"
-            )
+    cited = set(en_seq)
+    for label, year in sorted(cited):
+        surname = first_surname(label)
+        if not any(author.startswith(surname) and entry_year == year
+                   for author, entry_year, _ in en_entries):
+            failures.append(f"Citation has no matching reference entry: {label}, {year}")
 
-    for kind, expected in (("table", list(range(1, 22))), ("figure", list(range(1, 4)))):
+    for author, year, _ in en_entries:
+        if not any(entry_year == year and author.startswith(first_surname(label))
+                   for label, entry_year in cited):
+            failures.append(f"Reference entry is never cited: {author}, {year}")
+
+    for kind, expected in (("table", list(range(1, 22))), ("figure", list(range(1, 5)))):
         en_numbers = caption_numbers(en, kind)
         zh_numbers = caption_numbers(zh, kind)
         if en_numbers != expected:
@@ -99,7 +114,7 @@ def check() -> list[str]:
             failures.append(f"ZH {kind} captions differ from {expected}")
 
     for language, text in (("EN", en), ("ZH", zh)):
-        if text.count("```mermaid") != 3 or text.count("```") != 6:
+        if text.count("```mermaid") != 4 or text.count("```") != 8:
             failures.append(f"{language} Mermaid/code fence count is invalid")
         if text.count("\n\\[\n") != text.count("\n\\]\n"):
             failures.append(f"{language} display-math delimiters are unbalanced")
@@ -123,8 +138,8 @@ def check() -> list[str]:
 
     required = (
         "A$136.15",
-        "A$141.30–A$246.30",
-        "A$277.45–A$382.45",
+        "A$161.30–A$256.30",
+        "A$297.45–A$392.45",
         "10.77",
         "26.35",
         "101.32",
@@ -181,18 +196,18 @@ def main() -> int:
         return 1
     en = EN.read_text(encoding="utf-8-sig")
     en_body, en_refs = body_and_refs(en)
-    citation_count = len(expanded_citations(en_body))
+    citation_count = len(citation_keys(en_body))
     reference_count = len(reference_entries(en_refs))
     equation_count = len(display_equations(en_body))
 
     print("PASS")
     print(
-        f"- paired citations: {citation_count} expanded uses; contiguous first-citation "
-        f"order 1..{reference_count}"
+        f"- paired citations: {citation_count} APA author-date uses resolving to "
+        f"{reference_count} alphabetised entries"
     )
-    print("- captions: Tables 1..21 and Figures 1..3 in both reports")
+    print("- captions: Tables 1..21 and Figures 1..4 in both reports")
     print(
-        f"- structures: Sections 1..12, three Mermaid diagrams, {equation_count} "
+        f"- structures: Sections 1..12, four Mermaid diagrams, {equation_count} "
         "identical display equations and balanced math fences"
     )
     print(

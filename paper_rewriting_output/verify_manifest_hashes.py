@@ -28,10 +28,13 @@ MANIFEST = PAPER / "final_artifact_manifest.md"
 GITATTRIBUTES = ROOT / ".gitattributes"
 
 EVIDENCE_ROW = re.compile(
-    r"(?m)^\|\s*(IE\d+)\s*\|\s*\[(\d+)\]\s*\|[^|]*\|\s*`([A-F0-9]{64})`\s*\|$"
+    r"(?m)^\|\s*(IE\d+)\s*\|\s*\(ENG5105 Project Team, ((?:19|20)\d{2}[a-z]?)\)\s*"
+    r"\|[^|]*\|\s*`([A-F0-9]{64})`\s*\|$"
 )
 MANIFEST_ROW = re.compile(r"(?m)^\|\s*`([^`]+)`\s*\|\s*`([A-F0-9]{64})`\s*\|")
-REFERENCE_ENTRY = re.compile(r"^\[(\d+)\]\s+(.*?)(?=^\[\d+\]\s+|\Z)", re.MULTILINE | re.DOTALL)
+REFERENCE_ENTRY = re.compile(
+    r"(?m)^ENG5105 Project Team\. \(((?:19|20)\d{2}[a-z]?)\)\. (?P<rest>[^\n]+)$"
+)
 SOURCE_FILE = re.compile(r"source file:\s*`([^`]+)`")
 
 
@@ -39,14 +42,14 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
 
-def reference_sources(text: str) -> dict[int, str]:
-    """Map reference number to the repository-relative path it cites."""
+def reference_sources(text: str) -> dict[str, str]:
+    """Map an internal record's APA year to the repository-relative path it cites."""
     _, refs = re.split(r"(?m)^# (?:References|参考文献)\s*$", text, maxsplit=1)
-    sources: dict[int, str] = {}
-    for number, entry in REFERENCE_ENTRY.findall(refs.strip()):
+    sources: dict[str, str] = {}
+    for year, entry in REFERENCE_ENTRY.findall(refs.strip()):
         match = SOURCE_FILE.search(entry)
         if match:
-            sources[int(number)] = match.group(1)
+            sources[year] = match.group(1)
     return sources
 
 
@@ -68,10 +71,10 @@ def check() -> list[str]:
         failures.append("Appendix A rows differ between English and Chinese")
 
     for identifier, reference, recorded in en_rows:
-        relative = sources.get(int(reference))
+        relative = sources.get(reference)
         if relative is None:
             failures.append(
-                f"{identifier}: reference [{reference}] names no source file, "
+                f"{identifier}: reference (ENG5105 Project Team, {reference}) names no source file, "
                 "so its hash cannot be verified"
             )
             continue

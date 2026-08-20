@@ -18,13 +18,13 @@ The global-shutter camera requires a suitable C/CS-mount lens. The subtotal ther
 | Item/group | Planning estimate | Basis and uncertainty |
 |---|---:|---|
 | 400 P/R incremental photoelectric encoder, SEN0230 | A$41.30 | Verified current supplier listing: https://core-electronics.com.au/incremental-photoelectric-rotary-encoder-400p-r.html |
-| Controlled diffuse/low-angle lighting | A$30-A$60 | Team planning allowance; supplier quotation not yet fixed |
-| 12 V supply, 5 V conversion, MOSFET, fuses, connectors, protection | A$30-A$50 | Team planning allowance; final topology and quotation pending |
+| LED desk lamp | A$0 | Laboratory equipment already held; interim illumination, not a purchase |
+| Enclosed 12 V DC supply with screw terminals, 5 V conversion, MOSFET drivers, fuses, connectors, protection | A$80-A$120 | Team planning allowance for an Australian-sourced set; ratings and quotation provisional |
 | Mirrors, enclosure, brackets, guides | A$30-A$70 | Team planning allowance; final fixture dimensions pending material receipt |
-| Marker/servo demonstrator | A$10-A$25 | Team planning allowance; optional until safe-output validation |
-| **Plan B additional-procurement envelope** | **A$141.30-A$246.30** | Shipping excluded; only the encoder price is supplier-verified |
+| Marker/servo demonstrator | A$10-A$25 | Team planning allowance; purchased with the build, physical output released only after safe-output validation |
+| **Plan B additional-procurement envelope** | **A$161.30-A$256.30** | Shipping excluded; only the encoder price is supplier-verified |
 
-If Plan A were adopted, its A$136.15 imaging subtotal would be added to the common additional-procurement envelope, producing A$277.45-A$382.45 before shipping. This is a 55%-96% increase over the Plan B envelope, depending on where the common allowance settles. The cost comparison is a planning decision, not an approved purchase order.
+If Plan A were adopted, its A$136.15 imaging subtotal would be added to the common additional-procurement envelope, producing A$297.45-A$392.45 before shipping. This is a 55%-96% increase over the Plan B envelope, depending on where the common allowance settles. The cost comparison is a planning decision, not an approved purchase order.
 
 ## Technical relevance of Plan A
 

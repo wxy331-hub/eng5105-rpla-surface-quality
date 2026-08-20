@@ -2,8 +2,8 @@
 
 | Artifact | SHA-256 | Final validation |
 |---|---|---|
-| `ENG5105_Proposal_Design_Report_EN.md` | `E72AEB2E48CEEBBCB47E6F4404FAED5F65280C70179F4BA45C0190F977F12A84` | 49 references; 175 expanded citation uses; no project-file/path references in the body; Tables 1–21; Figures 1–3; nine equations |
-| `ENG5105_Proposal_Design_Report_ZH.md` | `3FD02D62F56F173EE4923BA9FAD3B5C07258B7FF26951ED0A7A7014069C29913` | Paired structure, references, URLs, evidence labels, equations and critical numbers match English |
+| `ENG5105_Proposal_Design_Report_EN.md` | `ACF7D18AC02B80274CFCD87D4F0561ED213986690E6A3FE3083983C48056025B` | 49 references; 175 expanded citation uses; no project-file/path references in the body; Tables 1–21; Figures 1–3; nine equations |
+| `ENG5105_Proposal_Design_Report_ZH.md` | `5CB9F171A7B8E11C5369E7A640B1A0D2121E7E942D1BDA13B4A6D7A152B1CBE8` | Paired structure, references, URLs, evidence labels, equations and critical numbers match English |
 
 Concept revision: Plan A, direct global-shutter imaging over CSI, is now the selected concept, and the reports carry that decision throughout. Plan B is retained as the interim implementation that produced every measurement recorded here, Section 5.8 and Table 13 define the migration and the evidence it invalidates, and Table 9, retitled to cover both chains, carries the selected CSI interface alongside the interim MJPEG one. Narrative dates were replaced with relative wording; evidence dates, supplier access dates and the Appendix A cut-off are unchanged, because removing those would break the traceability the report is built on. The procurement is approved and unordered: no arrival date is asserted anywhere, and the validator now fails if either language claims otherwise. The earlier Plan B-as-selected drafts were replaced rather than kept alongside, so these two files are the only proposal reports in the repository.
 
@@ -19,4 +19,4 @@ configuration, resident-service and vision records were updated to match. The
 evidence level did not change: the new behaviour is development-host software
 evidence and no physical or Pi-deployment claim was added.
 
-Delivery boundary: Markdown text only. No Word, PDF or LaTeX deliverable is included.
+Delivery boundary: the two Markdown files remain the hash-anchored source of record. `ENG5105_Proposal_Design_Report_EN.docx` and `ENG5105_Proposal_Design_Report_ZH.docx` are generated from them for submission, and carry no hash record of their own because they are regenerated output rather than evidence. The build renders the three Mermaid diagrams to PNG, converts the nine display equations and the inline mathematics to native Word equations, and adds a table of contents, page numbers and A4 page setup. Two presentation-only differences from the Markdown are deliberate: Figure 1 is laid out top-to-bottom rather than left-to-right, because left-to-right fits an A4 text column only at an unreadable label size, and table columns are sized by Word to their content rather than to the widths of the Markdown source columns. No wording, number, table row or figure element differs. No PDF or LaTeX deliverable is included.

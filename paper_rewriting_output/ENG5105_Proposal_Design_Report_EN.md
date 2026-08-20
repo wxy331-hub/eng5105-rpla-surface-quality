@@ -362,7 +362,7 @@ The released Pi service must not replay old frames. It will require three consec
 
 Table 9 distinguishes implemented transport from proposed hardware interfaces; Table 10 then fixes the Windows development API used by the present GUI evidence.
 
-**Table 9. Plan B subsystem communications and integrity rules.**
+**Table 9. Subsystem communications and integrity rules, covering the selected and interim acquisition chains.**
 
 | Interface | Payload and present/planned mode | Integrity, timing and recovery rule |
 |---|---|---|

@@ -1,0 +1,11 @@
+{
+  "name": "eng5105-docx-build",
+  "private": true,
+  "type": "module",
+  "description": "Renders the report diagrams and PDF previews for the Word build",
+  "dependencies": {
+    "mermaid": "^11.17.0",
+    "pdfjs-dist": "^5.4.0",
+    "puppeteer": "^24.0.0"
+  }
+}

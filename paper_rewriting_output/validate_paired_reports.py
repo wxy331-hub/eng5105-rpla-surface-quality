@@ -105,7 +105,7 @@ def check() -> list[str]:
                    for label, entry_year in cited):
             failures.append(f"Reference entry is never cited: {author}, {year}")
 
-    for kind, expected in (("table", list(range(1, 22))), ("figure", list(range(1, 5)))):
+    for kind, expected in (("table", list(range(1, 21))), ("figure", list(range(1, 5)))):
         en_numbers = caption_numbers(en, kind)
         zh_numbers = caption_numbers(zh, kind)
         if en_numbers != expected:
@@ -137,9 +137,10 @@ def check() -> list[str]:
         failures.append("Internal evidence SHA-256 values differ")
 
     required = (
-        "A$136.15",
-        "A$161.30–A$256.30",
-        "A$297.45–A$392.45",
+        "A$142.00",
+        "A$18.00",
+        "A$342.00–537.00",
+        "A$360.00–555.00",
         "10.77",
         "26.35",
         "101.32",
@@ -205,7 +206,7 @@ def main() -> int:
         f"- paired citations: {citation_count} APA author-date uses resolving to "
         f"{reference_count} alphabetised entries"
     )
-    print("- captions: Tables 1..21 and Figures 1..4 in both reports")
+    print("- captions: Tables 1..20 and Figures 1..4 in both reports")
     print(
         f"- structures: Sections 1..12, four Mermaid diagrams, {equation_count} "
         "identical display equations and balanced math fences"

@@ -1,60 +1,75 @@
 # Proposal-Stage Engineering Calculations
 
-All values below are design allocations or calculations from recorded integration observations. They are not measured final-hardware power, calibrated physical performance, or stakeholder-approved requirements.
+Every value below is a design allocation or an arithmetic consequence of one. None
+is measured final-hardware power, calibrated optical performance, or a
+stakeholder-approved requirement. The report is the authoritative statement of each
+of these; this file exists so the arithmetic can be checked in one place.
 
-## 1. Frame spacing along a moving filament
+The design images a held, indexed filament specimen rather than a running strand,
+so there is no line-speed, frame-spacing or encoder-scale calculation here. What
+replaces them is the sampling-density and depth-of-field pair in Section 1, which is
+what forced the specimen to be held in the first place.
 
-The axial travel between processed frames is
+## 1. Optical sampling density and the depth of field it costs
 
-\[
-\Delta x = \frac{v}{f},
-\]
-
-where \(v\) is line speed in mm/s and \(f\) is processed frames/s.
-
-| Line speed | Speed in mm/s | At observed 10.77 FPS | At proposed 20 FPS |
-|---:|---:|---:|---:|
-| 1 m/min | 16.67 | 1.55 mm/frame | 0.83 mm/frame |
-| 3 m/min | 50.00 | 4.64 mm/frame | 2.50 mm/frame |
-| 5 m/min | 83.33 | 7.74 mm/frame | 4.17 mm/frame |
-
-The calculation does not establish a detectable defect size. It shows why the current SVGA throughput result does not satisfy the proposed 20 FPS target and why line speed, field of view, exposure, and multi-frame confirmation must be tested together.
-
-## 2. Alarm-delay travel
-
-The distance travelled during an alarm delay is
+For a horizontal pixel count \(N_h\) spread over an imaged field width \(w_f\), the
+sampling density \(s\) and the pixel span of a feature of width \(d\) are
 
 \[
-d = v t.
+s=\frac{N_h}{w_f}, \qquad n_d=s\,d.
 \]
 
-At 5 m/min, the filament moves 41.67 mm in the proposed 500 ms alarm window. At 1 m/min it moves 8.33 mm. The recorded 222.99 ms P95 brightness-step response corresponds mathematically to 18.58 mm at 5 m/min, but that test does not include a sensor-exposure timestamp or browser-paint completion and therefore is not used as final physical latency evidence.
+At the planned working point, \(N_h = 3840\) and \(w_f = 40\) mm:
 
-## 3. Encoder scale
+| Quantity | Value |
+|---|---:|
+| Sampling density \(s\) | 96 px/mm |
+| 1.75 mm strand | 168 px |
+| 0.20 mm R2 target feature | 19 px |
 
-For a 400 pulse/revolution quadrature encoder decoded on four edges, the theoretical count is 1600 counts/revolution. If the measured effective wheel circumference is \(C\) mm,
+Sampling density is not resolving power. The module publishes no working aperture,
+and its field adjustment may combine optical and electronic zoom, so the delivered
+detail can sit well below what the pixel count suggests. G3 measures it against a
+resolution target rather than assuming it.
+
+Narrowing the field to reach that density costs depth of field. A first-order
+estimate at an assumed f/4 working aperture leaves roughly 1.4 mm of total focus
+depth. A cylinder of radius \(R\) consumes, across the usable \(\pm45°\) arc,
 
 \[
-k_e = \frac{1600}{C}\;\text{counts/mm}, \qquad
-q_e = \frac{C}{1600}\;\text{mm/count}.
+\Delta z = R\left(1-\cos 45°\right) = 0.875 \times 0.293 = 0.26\ \text{mm}.
 \]
 
-No value is assigned to \(C\) before the physical wheel and contact geometry are measured. Slip, eccentricity, preload, and camera-to-marker offset must be included in the position-error test rather than inferred from encoder resolution alone.
+That leaves margin for a specimen a fixture holds on the optical axis, and none for
+a strand free to wander. This is the calculation the held-specimen design basis
+rests on.
 
-## 4. Optical scale
+## 2. Circumferential coverage
 
-If a reference of known length \(L_{ref}\) mm spans \(P_{ref}\) pixels in the final filament plane,
+One camera sees one arc. A single view reads a usable arc of about \(\pm45°\)
+before the surface turns too far from the optical axis, so four positions at 90°
+would meet edge to edge with no overlap and no tolerance for placement error. Six
+positions at 60° are planned instead, leaving about 30° of overlap. Each position is
+captured under both illumination branches, so one specimen yields twelve views and
+one merged event set.
+
+## 3. Optical scale
+
+If a reference of known length \(L_{ref}\) mm spans \(P_{ref}\) pixels in the final
+filament plane,
 
 \[
 s = \frac{L_{ref}}{P_{ref}}\;\text{mm/pixel}, \qquad
 L_{candidate} = s P_{candidate}.
 \]
 
-The scale is valid only for the fixed focus, working distance, ROI, and optical geometry used during calibration. Until a `calibration_id` exists, `size_mm` remains null.
+The scale is valid only for the fixed focus, working distance, ROI and optical
+geometry used during calibration, and only for the acquisition chain it was measured
+on. Until a `calibration_id` exists, `size_mm` remains null.
 
-## 5. Proposed power budget
+## 4. Proposed power budget
 
-### 5.1 Raspberry Pi supply domain
+### 4.1 Raspberry Pi supply domain
 
 | Load | Normal allocation | Peak allocation |
 |---|---:|---:|
@@ -62,51 +77,58 @@ The scale is valid only for the fixed focus, working distance, ROI, and optical 
 | STM32 Nucleo via USB | 0.25 W | 0.50 W |
 | **Domain total** | **7.75 W** | **13.00 W** |
 
-For a 5.1 V, 3 A Raspberry Pi supply, available power is
+For a 5.1 V, 3 A supply, available power is
 
 \[
-P_{available}=5.1\times3=15.3\;\text{W}.
+P_{available}=5.1\times3=15.3\;\text{W},
 \]
 
-The design peak margin is
+and the design peak margin is
 
 \[
 M=\frac{15.3-13.0}{15.3}\times100=15.0\%.
 \]
 
-This margin must be checked using undervoltage logs and measured current on the deployed Raspberry Pi. Motors and lighting are excluded from this domain.
+The selected camera is assumed to run from the mains adapter its package includes,
+so it appears in neither domain total. If incoming inspection finds it bus-powered,
+a Raspberry Pi 4 USB port rated at 900 mA adds up to 4.50 W, taking the peak
+allocation to 17.50 W against 15.30 W available. That is a negative margin, so a
+bus-powered device forces a larger supply or a self-powered hub before the fixture is
+wired.
 
-### 5.2 Auxiliary 12 V domain
+### 4.2 Auxiliary 12 V domain
 
 | Load | Normal allocation | Peak allocation | Conversion path |
 |---|---:|---:|---|
 | ESP32S3 Sense + OV3660 | 1.50 W | 2.50 W | 12 V to regulated 5 V |
-| IR/analogue/LCD electronics | 0.40 W | 0.80 W | 12 V to regulated 5 V |
+| IR/analogue/LCD electronics | 0.40 W | 0.80 W | Mixed regulated rails |
 | Controlled lighting | 8.00 W | 12.00 W | 12 V branch |
-| Encoder | 0.50 W | 1.20 W | Rated branch after component confirmation |
-| Marker/servo demonstrator | 0 W | 5.00 W | Protected switched branch |
+| Reject/stop demonstrator | 0 W | 5.00 W | Protected switched branch |
 
-Assuming 85% conversion efficiency for the 5 V loads, the 12 V input demand is
+Assuming 85% conversion efficiency for the 5 V loads,
 
 \[
-P_{12V,normal}=\frac{1.50+0.40}{0.85}+8.00+0.50=10.74\;\text{W},
+P_{12V,normal}=\frac{1.50+0.40}{0.85}+8.00=10.24\;\text{W},
 \]
 
 \[
-P_{12V,peak}=\frac{2.50+0.80}{0.85}+12.00+1.20+5.00=22.08\;\text{W}.
+P_{12V,peak}=\frac{2.50+0.80}{0.85}+12.00+5.00=20.88\;\text{W}.
 \]
 
-A regulated 12 V, 3 A supply provides 36 W. Its proposal-stage peak margin is
+A regulated 12 V, 5 A source supplies 60 W, so the proposal-stage peak margin is
 
 \[
-M=\frac{36-22.08}{36}\times100=38.7\%.
+M=\frac{60-20.88}{60}\times100=65.2\%.
 \]
 
-Final supply, fuse, conductor, connector, and thermal selections require inrush and steady-state measurements. Each switched inductive branch requires appropriate flyback suppression; the Raspberry Pi must not power the marker/servo.
+Final supply, fuse, conductor, connector and thermal selections require inrush and
+steady-state measurements. Each switched inductive branch requires appropriate
+flyback suppression, and the Raspberry Pi must not power the demonstrator.
 
-## 6. Photodiode conditioning basis
+## 5. Photodiode conditioning basis
 
-For a photodiode current \(I_{PD}\) and desired output swing \(V_{span}\), the first transimpedance estimate is
+For a photodiode current \(I_{PD}\) and a desired output swing \(V_{span}\), the
+first transimpedance estimate is
 
 \[
 R_f=\frac{V_{span}}{I_{PD}}.
@@ -118,5 +140,13 @@ With feedback capacitance \(C_f\), the approximate low-pass corner is
 f_c=\frac{1}{2\pi R_f C_f}.
 \]
 
-The project has not yet measured \(I_{PD}\) under the final geometry. Numerical resistor and capacitor values are therefore intentionally deferred until the optical head is assembled; assigning them now would create false precision.
+\(I_{PD}\) has not been measured under the final geometry, so resistor and capacitor
+values are deferred until the optical head is assembled; assigning them now would
+create false precision.
 
+Two conditioning stages are needed rather than one, and the same two equations size
+both. The infrared presence-and-health channel is sampled only with both
+illumination branches de-energised, which keeps it an infrared measurement. The
+illumination reference detector watches the diffuser output on its own stage and its
+own converter channel, because one detector cannot separate a change in lamp output
+from a change in what sits in front of the lens.

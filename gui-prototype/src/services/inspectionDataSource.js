@@ -2,7 +2,9 @@ import {
   offlineDetections,
   offlineEvidenceSummary,
   scenarioTimeline,
-} from "../data/week4OfflineEvidence.js";
+  offlineFrames,
+} from "../data/offlineEvidence.js";
+import { createResolutionMetadata } from "./resolutionMetadata.js";
 
 export class CameraSource {
   async connect() { throw new Error("CameraSource.connect() is not implemented"); }
@@ -32,7 +34,7 @@ export class AlarmController {
 /**
  * Integration boundary for the Week 4/8/9 system work.
  * The GUI consumes this contract and does not know whether data comes from
- * ESP32-S3 MJPEG, a CSI global-shutter camera, STM32 serial, or a database.
+ * USB UVC, ESP32-S3 MJPEG, STM32 serial, or a database.
  */
 export class InspectionDataSource {
   async connect() {
@@ -79,16 +81,28 @@ export class OfflineReplayInspectionDataSource extends InspectionDataSource {
     const step = scenarioTimeline[this.#stepIndex];
     const frameId = step.frameId ?? 0;
     const currentDetection = [...offlineDetections].reverse().find((item) => item.frameId <= frameId) ?? null;
-    const imageEvidence = currentDetection ?? offlineDetections[0];
+    const imageEvidence = offlineFrames.find((item) => item.frameId === frameId)
+      ?? currentDetection ?? offlineDetections[0];
     const lastFrameAgeS = step.state === "STALE" ? 1.1 : step.state === "DISCONNECTED" ? 2.1 : 0;
 
     return {
       ...offlineEvidenceSummary,
+      ...createResolutionMetadata({
+        widthPx: imageEvidence.frameWidthPx ?? offlineEvidenceSummary.frameWidthPx,
+        heightPx: imageEvidence.frameHeightPx ?? offlineEvidenceSummary.frameHeightPx,
+        synthetic: true,
+        requestedWidthPx: offlineEvidenceSummary.requestedWidthPx,
+        requestedHeightPx: offlineEvidenceSummary.requestedHeightPx,
+        requestedPixelFormat: offlineEvidenceSummary.requestedPixelFormat,
+        requestedFps: offlineEvidenceSummary.requestedFps,
+      }),
       mode: "OFFLINE EVIDENCE",
       currentStepIndex: this.#stepIndex,
       currentStep: step,
       cameraState: step.state,
       automaticActionsAllowed: step.automaticActionsAllowed,
+      candidateProcessingAllowed: step.automaticActionsAllowed,
+      physicalOutputsAllowed: false,
       recoveryCount: step.recoveryCount,
       frameNumber: frameId,
       lastFrameAgeS,
@@ -212,20 +226,78 @@ export function collapseCandidateEpisodes(detections, { maxFrameGap = 1, minIou 
   }));
 }
 
-export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl) {
+const cameraSources = {
+  ALC_IMX258_USB: {
+    name: "ALC-IMX258 USB",
+    path: "PLAN_A_ALC_IMX258_USB_UVC",
+    type: "usb_uvc",
+  },
+  ESP32S3_OV3660: {
+    name: "ESP32S3 OV3660",
+    path: "PLAN_B_ESP32S3_OV3660_MJPEG",
+    type: "esp32_mjpeg",
+  },
+};
+
+const cameraPathLabels = {
+  PLAN_A_ALC_IMX258_USB_UVC: "Plan A · ALC-IMX258 USB UVC",
+  PLAN_B_ESP32S3_OV3660_MJPEG: "Plan B · ESP32S3 OV3660 MJPEG",
+};
+
+export function createCameraSourceMetadata(summary = {}) {
+  const cameraSource = summary.camera_source?.trim() || null;
+  const knownSource = cameraSources[cameraSource];
+  // Older captured evidence has only camera_source. Its original identity is
+  // sufficient to name the path; missing or unfamiliar sources stay explicit.
+  const cameraPath = summary.camera_path?.trim() || knownSource?.path || null;
+  return {
+    source: knownSource?.name ?? cameraSource?.replaceAll("_", " ") ?? "Waiting for camera source",
+    cameraSource,
+    cameraPath,
+    cameraPathLabel: cameraPathLabels[cameraPath] ?? cameraPath?.replaceAll("_", " ") ?? "Camera path unavailable",
+    sourceType: summary.source_type?.trim() || knownSource?.type || null,
+  };
+}
+
+function currentFrameTelemetryLatency(summary, nowMs) {
+  const receivedAtMs = Date.parse(summary.frame_received_at_utc ?? "");
+  const publishedAtMs = Date.parse(summary.snapshot_published_at_utc ?? "");
+  const frameAgeMs = summary.frame_age_ms;
+  const staleAfterMs = summary.stale_after_ms;
+  const elapsedMs = nowMs - receivedAtMs;
+  // This measures current-frame telemetry arriving at the GUI. The separate
+  // MJPEG stream has no browser-side frame identity, so this is not paint time.
+  const valid = summary.camera_state === "HEALTHY"
+    && Number.isInteger(summary.current_frame_id) && summary.current_frame_id >= 0
+    && Number.isInteger(summary.frame_width_px) && summary.frame_width_px > 0
+    && Number.isInteger(summary.frame_height_px) && summary.frame_height_px > 0
+    && Number.isFinite(staleAfterMs) && staleAfterMs > 0
+    && Number.isFinite(frameAgeMs) && frameAgeMs >= 0 && frameAgeMs <= staleAfterMs
+    && Number.isFinite(receivedAtMs) && Number.isFinite(publishedAtMs)
+    && publishedAtMs >= receivedAtMs && publishedAtMs <= nowMs
+    && elapsedMs >= 0 && elapsedMs <= staleAfterMs;
+  return valid ? Math.round(elapsedMs) : null;
+}
+
+export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl, { serviceFrame = false, nowMs = Date.now() } = {}) {
   const defects = rawDetections.map((item) => toGuiDetection(item, imageUrl));
   const currentDetection = defects.at(-1) ?? null;
   const cameraState = summary.camera_state ?? "HEALTHY";
   const frameNumber = summary.current_frame_id ?? Math.max(0, summary.frames_received - 1);
-  const frameReceivedAtMs = Date.parse(summary.frame_received_at_utc ?? "");
-  const postDecodeToGuiLatencyMs = Number.isFinite(frameReceivedAtMs)
-    ? Math.max(0, Math.round(Date.now() - frameReceivedAtMs))
-    : null;
+  // Loading a saved snapshot must never turn its age into a latency reading.
+  const postDecodeToGuiLatencyMs = serviceFrame ? currentFrameTelemetryLatency(summary, nowMs) : null;
   return {
     mode: "INSPECTION RUN",
-    source: summary.camera_source.replaceAll("_", " "),
+    ...createCameraSourceMetadata(summary),
     batchId: summary.batch_id,
-    resolution: `${summary.frame_width_px} × ${summary.frame_height_px}`,
+    ...createResolutionMetadata({
+      widthPx: summary.frame_width_px,
+      heightPx: summary.frame_height_px,
+      requestedWidthPx: summary.requested_width_px,
+      requestedHeightPx: summary.requested_height_px,
+      requestedPixelFormat: summary.requested_pixel_format,
+      requestedFps: summary.requested_fps,
+    }),
     framesizeName: summary.framesize_name,
     roiPx: summary.roi_px,
     cameraState,
@@ -254,7 +326,10 @@ export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl) {
     evidenceLevel: summary.evidence_level,
     hardwarePerformanceVerified: summary.hardware_stream_verified,
     rplaDefectPerformanceVerified: summary.rpla_defect_performance_verified,
-    physicalMeasurementsAvailable: summary.physical_measurements_available,
+    calibrationId: typeof summary.calibration_id === "string" ? summary.calibration_id.trim() || null : null,
+    physicalMeasurementsAvailable: summary.physical_measurements_available === true
+      && typeof summary.calibration_id === "string" && summary.calibration_id.trim().length > 0,
+    physicalOutputsAllowed: false,
     captureInterpretation: summary.interpretation,
     defects,
   };
@@ -272,9 +347,9 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
   #defects = [];
   #snapshot = {
     mode: "LIVE DETECTION",
-    source: "ESP32S3 OV3660",
+    ...createCameraSourceMetadata(),
     batchId: "Starting service",
-    resolution: "Waiting for frame",
+    ...createResolutionMetadata(),
     roiPx: [0, 0, 0, 0],
     cameraState: "CONNECTING",
     automaticActionsAllowed: false,
@@ -289,10 +364,14 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
     frameNumber: 0,
     currentDetection: null,
     imageUrl: `${serviceApiUrl}/api/frame.jpg`,
+    streamUrl: `${serviceApiUrl}/api/stream.mjpg`,
     imageFrameNumber: 0,
     measuredFps: 0,
     processingLatencyMs: null,
     postDecodeToGuiLatencyMs: null,
+    calibrationId: null,
+    physicalMeasurementsAvailable: false,
+    physicalOutputsAllowed: false,
     defects: [],
   };
 
@@ -351,8 +430,9 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
 
   #applyPayload(payload) {
     this.#snapshot = {
-      ...createLiveEvidenceSnapshot(payload.summary, payload.detections, `${serviceApiUrl}/api/frame.jpg`),
+      ...createLiveEvidenceSnapshot(payload.summary, payload.detections, `${serviceApiUrl}/api/frame.jpg`, { serviceFrame: true }),
       mode: "LIVE DETECTION",
+      streamUrl: `${serviceApiUrl}/api/stream.mjpg`,
     };
     this.#defects = this.#snapshot.defects;
     this.#emit();
@@ -368,6 +448,7 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
         ...this.#snapshot,
         cameraState: "DISCONNECTED",
         automaticActionsAllowed: false,
+        postDecodeToGuiLatencyMs: null,
         currentStep: { event: "LIVE_SERVICE_UNAVAILABLE", state: "DISCONNECTED" },
         loadError: error.message,
       };
@@ -387,6 +468,7 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
         ...this.#snapshot,
         cameraState: "RECONNECTING",
         automaticActionsAllowed: false,
+        postDecodeToGuiLatencyMs: null,
         currentStep: { event: "LIVE_SERVICE_RECONNECTING", state: "RECONNECTING" },
       };
       this.#emit();
@@ -401,9 +483,9 @@ export class LiveEvidenceInspectionDataSource extends InspectionDataSource {
   #defects = [];
   #snapshot = {
     mode: "INSPECTION RUN",
-    source: "ESP32S3 OV3660",
+    ...createCameraSourceMetadata(),
     batchId: "Loading",
-    resolution: "Waiting for frame",
+    ...createResolutionMetadata(),
     roiPx: [0, 0, 0, 0],
     cameraState: "CONNECTING",
     automaticActionsAllowed: false,
@@ -418,6 +500,9 @@ export class LiveEvidenceInspectionDataSource extends InspectionDataSource {
     currentDetection: null,
     imageUrl: null,
     imageFrameNumber: 0,
+    calibrationId: null,
+    physicalMeasurementsAvailable: false,
+    physicalOutputsAllowed: false,
     defects: [],
   };
 

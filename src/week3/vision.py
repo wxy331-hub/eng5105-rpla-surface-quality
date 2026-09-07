@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from uuid import uuid4
 
 import cv2
@@ -31,6 +32,29 @@ class BaselineVisionProcessor:
     algorithm_version: str = "week3-baseline-1"
     roi_px: tuple[int, int, int, int] | None = None
     data_mode: str = "synthetic_baseline"
+    score_base: float = _SCORE_BASE
+    score_area_divisor_px: float = _SCORE_AREA_DIVISOR_PX
+    score_ceiling: float = _SCORE_CEILING
+    reject_area_px: float = _REJECT_AREA_PX
+    scratch_min_aspect: float = _SCRATCH_MIN_ASPECT
+    contamination_min_area_px: float = _CONTAMINATION_MIN_AREA_PX
+    blur_kernel_size: int = 5
+    morph_kernel_size: int = 3
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.threshold <= 255:
+            raise ValueError("threshold must be between 0 and 255")
+        if not 0 <= self.score_base <= self.score_ceiling <= 1:
+            raise ValueError("score bounds must satisfy 0 <= base <= ceiling <= 1")
+        for name in ("min_area_px", "score_area_divisor_px", "reject_area_px",
+                     "scratch_min_aspect", "contamination_min_area_px"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive and finite")
+        for name in ("blur_kernel_size", "morph_kernel_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value % 2 == 0:
+                raise ValueError(f"{name} must be a positive odd integer")
 
     def process(
         self, packet: FramePacket, batch_id: str
@@ -54,9 +78,9 @@ class BaselineVisionProcessor:
         grey = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         # Keep the absolute intensity scale for this controlled synthetic source.
         # Histogram equalisation amplifies two-level sensor noise into false regions.
-        blurred = cv2.GaussianBlur(grey, (5, 5), 0)
+        blurred = cv2.GaussianBlur(grey, (self.blur_kernel_size, self.blur_kernel_size), 0)
         _, mask = cv2.threshold(blurred, self.threshold, 255, cv2.THRESH_BINARY)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((self.morph_kernel_size, self.morph_kernel_size), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         annotated = image.copy()
@@ -72,8 +96,8 @@ class BaselineVisionProcessor:
             short_side = max(min(rotated_width, rotated_height), 1.0)
             aspect = max(rotated_width, rotated_height) / short_side
             defect_type = self._candidate_type(aspect, area)
-            confidence = min(_SCORE_CEILING, _SCORE_BASE + area / _SCORE_AREA_DIVISOR_PX)
-            grade = QualityGrade.WARNING if area < _REJECT_AREA_PX else QualityGrade.REJECT
+            confidence = min(self.score_ceiling, self.score_base + area / self.score_area_divisor_px)
+            grade = QualityGrade.WARNING if area < self.reject_area_px else QualityGrade.REJECT
             record = DetectionRecord(
                 detection_id=f"DET-{uuid4().hex[:10].upper()}",
                 batch_id=batch_id,
@@ -103,11 +127,10 @@ class BaselineVisionProcessor:
             )
         return annotated, records
 
-    @staticmethod
-    def _candidate_type(aspect: float, area: float) -> str:
+    def _candidate_type(self, aspect: float, area: float) -> str:
         """Name a candidate by shape and size only; this is not a classifier."""
-        if aspect >= _SCRATCH_MIN_ASPECT:
+        if aspect >= self.scratch_min_aspect:
             return "scratch_candidate"
-        if area >= _CONTAMINATION_MIN_AREA_PX:
+        if area >= self.contamination_min_area_px:
             return "contamination_candidate"
         return "pit_candidate"

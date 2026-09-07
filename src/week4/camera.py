@@ -108,11 +108,14 @@ class Esp32MjpegSource(CameraSource):
         *,
         source_name: str = "ESP32S3_OV3660",
         capture_factory: Callable[[str], Any] = cv2.VideoCapture,
+        configure: Callable[[], Any] | None = None,
+        policy: ConnectionPolicy | None = None,
     ) -> None:
         self.stream_url = stream_url
         self.source_name = source_name
         self.capture_factory = capture_factory
-        self.monitor = CameraConnectionMonitor()
+        self.configure = configure
+        self.monitor = CameraConnectionMonitor(policy)
         self._capture: Any | None = None
         self._frame_id = 0
 
@@ -124,6 +127,8 @@ class Esp32MjpegSource(CameraSource):
         if "<ESP32_IP>" in self.stream_url:
             raise ValueError("replace <ESP32_IP> with the actual device address")
         self.monitor.begin_connect(reconnect=self.state is not CameraState.DISCONNECTED)
+        if self.configure is not None:
+            self.configure()
         self._capture = self.capture_factory(self.stream_url)
         if not self._capture.isOpened():
             self.disconnect()

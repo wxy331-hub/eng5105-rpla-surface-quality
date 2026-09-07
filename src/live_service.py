@@ -1,15 +1,15 @@
-"""Resident Plan B camera, inspection, REST, MJPEG, and WebSocket service."""
+"""Resident camera, inspection, REST, MJPEG, and WebSocket service."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
+import re
 import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from src.week3 import (
     BaselineVisionProcessor,
+    CameraSource,
     CameraState,
     DetectionRecord,
     FramePacket,
@@ -38,121 +39,19 @@ from src.week4 import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "live_service.json"
+from src.camera_config import DEFAULT_CONFIG_PATH, LiveServiceConfig, load_service_config
+from src.week4.uvc import UsbUvcSource
+
+
 DATA_MODE = "LIVE_CONTINUOUS_CANDIDATE_ONLY"
-
-
-@dataclass(frozen=True, slots=True)
-class LiveServiceConfig:
-    camera_ip: str
-    source_name: str
-    framesize_control_value: int
-    framesize_name: str
-    expected_width_px: int
-    expected_height_px: int
-    roi_px: tuple[int, int, int, int]
-    threshold: int
-    min_area_px: float
-    presence_gate_enabled: bool
-    target_dark_threshold: int
-    target_min_row_fraction: float
-    target_min_coverage: float
-    target_centre_fraction: float
-    target_max_width_fraction: float
-    jpeg_quality: int
-    reconnect_delay_s: float
-    open_timeout_ms: int
-    read_timeout_ms: int
-    event_retention: int
-    stale_after_s: float
-    disconnect_after_s: float
-    recovery_frames: int
-    cors_allow_origins: tuple[str, ...]
-    database_path: Path
-
-    @property
-    def stream_url(self) -> str:
-        return os.getenv("RPLA_STREAM_URL", f"http://{self.camera_ip}:81/stream")
-
-    @property
-    def control_base_url(self) -> str:
-        return os.getenv("RPLA_CONTROL_URL", f"http://{self.camera_ip}").rstrip("/")
-
-
-def load_service_config(path: Path = DEFAULT_CONFIG_PATH) -> LiveServiceConfig:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-    camera_ip = os.getenv("RPLA_CAMERA_IP", str(raw["camera_ip"])).strip()
-    profiles = raw["resolution_profiles"]
-    requested_resolution = os.getenv("RPLA_RESOLUTION", "").strip().upper()
-    legacy_framesize = os.getenv("RPLA_FRAMESIZE", "").strip()
-    if not requested_resolution and legacy_framesize:
-        requested_resolution = next(
-            (name for name, item in profiles.items() if int(item["framesize_control_value"]) == int(legacy_framesize)),
-            "",
-        )
-    resolution_name = requested_resolution or str(raw["default_resolution"]).upper()
-    if resolution_name not in profiles:
-        raise ValueError(f"unknown resolution profile: {resolution_name}")
-    profile = profiles[resolution_name]
-    expected_width = int(profile["width_px"])
-    expected_height = int(profile["height_px"])
-    roi_normalized = tuple(float(value) for value in raw["roi_normalized"])
-    if len(roi_normalized) != 4 or any(value < 0 or value > 1 for value in roi_normalized):
-        raise ValueError("roi_normalized must contain four values between zero and one")
-    roi = (
-        round(roi_normalized[0] * expected_width),
-        round(roi_normalized[1] * expected_height),
-        max(1, round(roi_normalized[2] * expected_width)),
-        max(1, round(roi_normalized[3] * expected_height)),
-    )
-    if roi[0] + roi[2] > expected_width or roi[1] + roi[3] > expected_height:
-        raise ValueError("scaled ROI lies outside the selected resolution")
-    database_path = Path(raw["database_path"])
-    if not database_path.is_absolute():
-        database_path = PROJECT_ROOT / database_path
-    # The GUI is served from a different origin once the service moves to the Pi,
-    # so the allowed origins have to be deployable without a code change.
-    cors_env = os.getenv("RPLA_CORS_ORIGINS", "").strip()
-    cors_origins = tuple(
-        origin.strip()
-        for origin in (cors_env.split(",") if cors_env else raw.get("cors_allow_origins", []))
-        if origin.strip()
-    )
-    return LiveServiceConfig(
-        camera_ip=camera_ip,
-        source_name=str(raw["source_name"]),
-        framesize_control_value=int(profile["framesize_control_value"]),
-        framesize_name=resolution_name,
-        expected_width_px=expected_width,
-        expected_height_px=expected_height,
-        roi_px=roi,
-        threshold=int(raw["threshold"]),
-        min_area_px=float(raw["min_area_px"]),
-        presence_gate_enabled=bool(raw["presence_gate_enabled"]),
-        target_dark_threshold=int(raw["target_dark_threshold"]),
-        target_min_row_fraction=float(raw["target_min_row_fraction"]),
-        target_min_coverage=float(raw["target_min_coverage"]),
-        target_centre_fraction=float(raw["target_centre_fraction"]),
-        target_max_width_fraction=float(raw.get("target_max_width_fraction", 0.65)),
-        jpeg_quality=int(raw["jpeg_quality"]),
-        reconnect_delay_s=float(raw["reconnect_delay_s"]),
-        open_timeout_ms=int(raw["open_timeout_ms"]),
-        read_timeout_ms=int(raw["read_timeout_ms"]),
-        event_retention=int(raw["event_retention"]),
-        stale_after_s=float(raw.get("stale_after_s", 1.0)),
-        disconnect_after_s=float(raw.get("disconnect_after_s", 2.0)),
-        recovery_frames=int(raw.get("recovery_frames", 3)),
-        cors_allow_origins=cors_origins,
-        database_path=database_path,
-    )
 
 
 def configure_camera(
     config: LiveServiceConfig,
     opener: Callable[..., Any] = urlopen,
 ) -> dict[str, Any]:
+    if config.source_type != "esp32_mjpeg":
+        raise ValueError("ESP32 HTTP configuration is only valid for esp32_mjpeg")
     query = urlencode({"var": "framesize", "val": config.framesize_control_value})
     with opener(f"{config.control_base_url}/control?{query}", timeout=5) as response:
         response.read()
@@ -163,9 +62,10 @@ def configure_camera(
     return status
 
 
-def _batch_id() -> str:
+def _batch_id(source_name: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"RPLA-LIVE-OV3660-{stamp}"
+    source_label = re.sub(r"[^A-Za-z0-9_-]+", "_", source_name)
+    return f"RPLA-LIVE-{source_label}-{stamp}"
 
 
 class InspectionRuntime:
@@ -175,10 +75,10 @@ class InspectionRuntime:
         self,
         config: LiveServiceConfig,
         *,
-        source_factory: Callable[[], Esp32MjpegSource] | None = None,
+        source_factory: Callable[[], CameraSource] | None = None,
     ) -> None:
         self.config = config
-        self.batch_id = _batch_id()
+        self.batch_id = _batch_id(config.source_name)
         self._source_factory = source_factory or self._make_source
         self._processor = BaselineVisionProcessor(
             threshold=config.threshold,
@@ -186,6 +86,7 @@ class InspectionRuntime:
             algorithm_version="live-service-roi-baseline-1",
             roi_px=config.roi_px,
             data_mode=DATA_MODE,
+            **config.vision_options,
         )
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
@@ -199,6 +100,8 @@ class InspectionRuntime:
         # waking the API threads waiting on _condition for a new JPEG version.
         self._buffer = LatestFrameBuffer()
         self._buffer_condition = threading.Condition()
+        self._connection_generation = 0
+        self._buffer_generation = 0
         # Service-level health. The source keeps its own monitor for read
         # failures; this one answers the question the source cannot: how old is
         # the newest frame we actually hold?
@@ -218,8 +121,8 @@ class InspectionRuntime:
         self._camera_configured = False
         self._frame_version = 0
         self._jpeg: bytes | None = None
-        self._width = config.expected_width_px
-        self._height = config.expected_height_px
+        self._width = 0
+        self._height = 0
         self._frames_received = 0
         self._frames_processed = 0
         self._inspection_frames = 0
@@ -240,11 +143,29 @@ class InspectionRuntime:
         capture.open(url)
         return capture
 
-    def _make_source(self) -> Esp32MjpegSource:
+    def _make_source(self) -> CameraSource:
+        policy = ConnectionPolicy(
+            stale_after_s=self.config.stale_after_s,
+            disconnect_after_s=self.config.disconnect_after_s,
+            recovery_frames=self.config.recovery_frames,
+        )
+        if self.config.source_type == "usb_uvc":
+            return UsbUvcSource(
+                self.config.camera_device,
+                width_px=self.config.expected_width_px,
+                height_px=self.config.expected_height_px,
+                pixel_format=self.config.pixel_format,
+                fps=self.config.requested_fps,
+                backend=self.config.camera_backend,
+                source_name=self.config.source_name,
+                policy=policy,
+            )
         return Esp32MjpegSource(
             self.config.stream_url,
             source_name=self.config.source_name,
             capture_factory=self._make_capture,
+            configure=lambda: configure_camera(self.config),
+            policy=policy,
         )
 
     def start(self) -> None:
@@ -274,6 +195,7 @@ class InspectionRuntime:
                 thread.join(timeout=timeout_s)
 
     def request_reconnect(self) -> None:
+        self._set_state(CameraState.RECONNECTING)
         self._reconnect_event.set()
 
     def delete_detections(self, detection_ids: list[str]) -> int:
@@ -299,6 +221,8 @@ class InspectionRuntime:
 
     def _set_state(self, state: CameraState, error: str | None = None) -> None:
         with self._condition:
+            if state in {CameraState.CONNECTING, CameraState.RECONNECTING, CameraState.DISCONNECTED}:
+                self._connection_generation += 1
             self._state = state
             self._last_error = error
             self._frame_version += 1
@@ -308,18 +232,27 @@ class InspectionRuntime:
         """Hand an event to the processing thread, which owns the database."""
         self._pending_events.append((self.config.source_name, event_type, details))
 
-    def _publish_frame(self, packet: FramePacket) -> None:
-        with self._buffer_condition:
-            self._buffer.put(packet)
-            self._buffer_condition.notify()
+    def _publish_frame(self, packet: FramePacket, generation: int | None = None) -> None:
+        with self._lock:
+            generation = self._connection_generation if generation is None else generation
+            if generation != self._connection_generation:
+                return
+            with self._buffer_condition:
+                self._buffer.put(packet)
+                self._buffer_generation = generation
+                self._buffer_condition.notify()
 
     def _take_frame(self, timeout_s: float) -> FramePacket | None:
+        item = self._take_buffered_frame(timeout_s)
+        return None if item is None else item[0]
+
+    def _take_buffered_frame(self, timeout_s: float) -> tuple[FramePacket, int] | None:
         with self._buffer_condition:
             packet = self._buffer.take()
             if packet is None:
                 self._buffer_condition.wait(timeout_s)
                 packet = self._buffer.take()
-            return packet
+            return None if packet is None else (packet, self._buffer_generation)
 
     def _drain_events(self, repository: SQLiteInspectionRepository) -> None:
         while self._pending_events:
@@ -343,23 +276,34 @@ class InspectionRuntime:
     def _run(self) -> None:
         """Acquisition thread: read frames and publish only the newest one."""
         while not self._stop_event.is_set():
-            source: Esp32MjpegSource | None = None
+            source: CameraSource | None = None
             try:
                 self._set_state(CameraState.CONNECTING)
-                configure_camera(self.config)
                 with self._lock:
-                    self._camera_configured = True
+                    self._camera_configured = False
+                    self._monitor.begin_connect(reconnect=True)
                 source = self._source_factory()
                 source.connect()
+                with self._lock:
+                    self._camera_configured = True
+                    generation = self._connection_generation
                 self._queue_event(
                     "LIVE_SERVICE_CAMERA_CONNECTED",
-                    {"stream_url": self.config.stream_url, "batch_id": self.batch_id},
+                    {"source_type": self.config.source_type, **self.config.connection_details, "batch_id": self.batch_id},
                 )
                 self._reconnect_event.clear()
                 while not self._stop_event.is_set() and not self._reconnect_event.is_set():
-                    self._publish_frame(next(source.frames(1)))
+                    self._publish_frame(next(source.frames(1)), generation)
             except Exception as exc:  # Camera faults must keep the service alive.
-                self._set_state(CameraState.DISCONNECTED, str(exc))
+                with self._condition:
+                    self._camera_configured = False
+                    self._monitor.mark_read_failure()
+                    # Invalidate in-flight frames in the same critical section
+                    # that reports the failed connection. Buffer cleanup must
+                    # not leave a window for an old frame to commit as healthy.
+                    self._set_state(CameraState.DISCONNECTED, str(exc))
+                with self._buffer_condition:
+                    self._buffer.take()
                 self._queue_event("LIVE_SERVICE_CAMERA_ERROR", {"error": str(exc)})
             finally:
                 if source is not None:
@@ -378,12 +322,12 @@ class InspectionRuntime:
             repository.start_batch(self.batch_id, self.config.source_name, DATA_MODE)
             while not self._stop_event.is_set():
                 self._drain_events(repository)
-                packet = self._take_frame(poll_timeout_s)
-                if packet is None:
+                buffered = self._take_buffered_frame(poll_timeout_s)
+                if buffered is None:
                     self._age_out()
                     continue
                 try:
-                    self._accept_packet(packet, repository)
+                    self._accept_packet(buffered[0], repository, generation=buffered[1])
                 except Exception as exc:  # A bad frame must not kill inspection.
                     self._set_state(CameraState.DISCONNECTED, str(exc))
                     self._queue_event("LIVE_SERVICE_PROCESSING_ERROR", {"error": str(exc)})
@@ -393,14 +337,32 @@ class InspectionRuntime:
         self,
         packet: FramePacket,
         repository: SQLiteInspectionRepository | None = None,
+        *,
+        generation: int | None = None,
     ) -> None:
         processing_started = time.perf_counter()
+        with self._lock:
+            generation = self._connection_generation if generation is None else generation
+            if generation != self._connection_generation:
+                return
+        image = packet.image
+        expected_shape = (self.config.expected_height_px, self.config.expected_width_px, 3)
+        if image.shape != expected_shape or image.dtype != np.uint8:
+            error = f"camera frame must be uint8 BGR {expected_shape}; received {image.shape} {image.dtype}"
+            self._monitor.mark_read_failure()
+            self._set_state(CameraState.DISCONNECTED, error)
+            raise ValueError(error)
+        if packet.source_name != self.config.source_name:
+            raise ValueError("frame source does not match the selected camera configuration")
         frame_id = self._frames_received
         now = time.monotonic()
         # Service health is decided by frame age, not by "the last read returned".
         # Take the more conservative of the source view and this one so a
         # healthy-looking read cannot re-enable inspection on its own.
-        service_state = self._monitor.frame_received(now)
+        with self._lock:
+            if generation != self._connection_generation:
+                return
+            service_state = self._monitor.frame_received(now)
         effective_state = (
             service_state if packet.camera_state is CameraState.HEALTHY else packet.camera_state
         )
@@ -446,14 +408,17 @@ class InspectionRuntime:
             raise OSError("could not encode the latest inspection frame")
 
         detection_rows = [record.to_dict() for record in records]
-        if repository is not None:
-            for record in records:
-                repository.append_detection(record)
-
         processed_at_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         processing_latency_ms = round((time.perf_counter() - processing_started) * 1000, 2)
 
         with self._condition:
+            # A disconnect/reconnect may arrive during decode or inspection. Only
+            # frames from the current connection may commit records or publish health.
+            if generation != self._connection_generation:
+                return
+            if repository is not None:
+                for record in records:
+                    repository.append_detection(record)
             self._state = packet.camera_state
             self._last_error = None
             self._width = width
@@ -523,7 +488,14 @@ class InspectionRuntime:
             summary = {
                 "status": "RUNNING" if self._state is CameraState.HEALTHY and self._target_present else "WAITING_FOR_MATERIAL" if self._state is CameraState.HEALTHY else "WAITING",
                 "evidence_level": DATA_MODE,
-                "camera_path": "PLAN_B_ESP32S3_OV3660_MJPEG",
+                "camera_path": self.config.camera_path,
+                "source_type": self.config.source_type,
+                "inspection_profile": self.config.inspection_profile,
+                "parameter_status": self.config.parameter_status,
+                "requested_pixel_format": self.config.pixel_format,
+                "requested_fps": self.config.requested_fps,
+                "requested_width_px": self.config.expected_width_px,
+                "requested_height_px": self.config.expected_height_px,
                 "camera_source": self.config.source_name,
                 "batch_id": self.batch_id,
                 "framesize_name": self.config.framesize_name,

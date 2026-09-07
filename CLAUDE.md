@@ -15,12 +15,18 @@ question seems to need that copy, ask instead.
 
 ## What this project is
 
-A proposal-stage machine-vision monitor for visible surface anomalies on moving
-rPLA filament, for the ENG5105 Integrated Design brief. Plan B (supplied ESP32S3
-/ OV3660, Raspberry Pi 4, STM32 Nucleo-L432KC) is the path built and validated
-now. Plan A imaging procurement was approved on 20 August 2026 but was not
-ordered on that date; Plan A is a post-delivery comparison, so no Plan A
-measurement may be reported until its own hardware arrives and is calibrated.
+A proposal-stage machine-vision monitor for visible surface anomalies on a held,
+indexed rPLA filament specimen, for the ENG5105 Integrated Design brief. The
+specimen is stationary because the magnification a 1.75 mm strand needs leaves
+about 1.4 mm of depth of field, which a fixture can hold and a running strand
+cannot; the reports state plainly that this narrows the brief's in-line context.
+
+Plan A, the ALC-IMX258 camera over USB video class, is the selected concept.
+The current service supports USB and ESP32 inputs through the same frame contract.
+No Plan A measurement may be reported until its own hardware arrives and is calibrated.
+Plan B (supplied ESP32S3 / OV3660, Raspberry Pi 4, STM32 Nucleo-L432KC) produced
+every measurement recorded so far and becomes the acquisition front end for the
+build only if the procurement decision gate fails.
 
 Requirement priority: assignment brief and discipline-specific content, then
 required interfaces and formats, then this file, then existing implementation.
@@ -43,8 +49,9 @@ This is the core value of the project and the easiest thing to break.
 - `confidence` is an uncalibrated area-derived ranking score. Do not describe it
   as a probability, and do not let `quality_grade` authorise rejection.
 - Do not fabricate measurements, timings or accuracy figures. The observed
-  10.77 FPS SVGA result is below the proposed 20 FPS target and must not be
-  presented as compliant.
+  10.77 FPS SVGA result is a preview rate on the interim chain, not a
+  capture-to-result time, and must never be restated as compliance with the
+  responsiveness requirement.
 
 ## Commands
 
@@ -55,9 +62,9 @@ This is the core value of the project and the easiest thing to break.
 `pytest.ini` pins `--basetemp=tmp/pytest`; the tracked `tmp/.gitkeep` must stay,
 because pytest creates the leaf directory but not its parent.
 
-The camera path needs the ESP32 powered and its CameraWebServer preview closed —
-the Python service must be the only direct MJPEG client. See `README.md` for
-launch commands.
+Select a camera source through the launcher or configuration. For Plan B the
+ESP32 must be powered and its CameraWebServer preview closed. For Plan A the
+Python service owns the selected USB device. See `CAMERA_SOURCES.md` for commands.
 
 ## Module boundaries
 
@@ -69,4 +76,3 @@ launch commands.
   thread, which owns the repository connection.
 - Tests stay hardware-free through injected `capture_factory` / `source_factory` /
   `opener`. Preserve that injection when adding code.
-

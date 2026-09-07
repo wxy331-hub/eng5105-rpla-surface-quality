@@ -1,24 +1,120 @@
 {
-  "camera_ip": "172.20.10.2",
-  "source_name": "ESP32S3_OV3660",
-  "default_resolution": "SVGA",
-  "resolution_profiles": {
-    "VGA": {"framesize_control_value": 10, "width_px": 640, "height_px": 480},
-    "SVGA": {"framesize_control_value": 11, "width_px": 800, "height_px": 600},
-    "XGA": {"framesize_control_value": 12, "width_px": 1024, "height_px": 768},
-    "SXGA": {"framesize_control_value": 14, "width_px": 1280, "height_px": 1024},
-    "UXGA": {"framesize_control_value": 15, "width_px": 1600, "height_px": 1200},
-    "QXGA": {"framesize_control_value": 19, "width_px": 2048, "height_px": 1536}
+  "default_source_type": "esp32_mjpeg",
+  "sources": {
+    "esp32_mjpeg": {
+      "camera_ip": "172.20.10.2",
+      "source_name": "ESP32S3_OV3660",
+      "default_resolution": "SVGA",
+      "resolution_profiles": {
+        "VGA": {
+          "framesize_control_value": 10,
+          "width_px": 640,
+          "height_px": 480
+        },
+        "SVGA": {
+          "framesize_control_value": 11,
+          "width_px": 800,
+          "height_px": 600
+        },
+        "XGA": {
+          "framesize_control_value": 12,
+          "width_px": 1024,
+          "height_px": 768
+        },
+        "SXGA": {
+          "framesize_control_value": 14,
+          "width_px": 1280,
+          "height_px": 1024
+        },
+        "UXGA": {
+          "framesize_control_value": 15,
+          "width_px": 1600,
+          "height_px": 1200
+        },
+        "QXGA": {
+          "framesize_control_value": 19,
+          "width_px": 2048,
+          "height_px": 1536
+        }
+      },
+      "inspection_profile": "plan_b"
+    },
+    "usb_uvc": {
+      "source_name": "ALC_IMX258_USB",
+      "device": 0,
+      "backend": "auto",
+      "default_resolution": "UHD",
+      "resolution_profiles": {
+        "UHD": {
+          "width_px": 3840,
+          "height_px": 2160,
+          "pixel_format": "MJPG",
+          "fps": 30
+        },
+        "FHD": {
+          "width_px": 1920,
+          "height_px": 1080,
+          "pixel_format": "MJPG",
+          "fps": 30
+        }
+      },
+      "inspection_profile": "plan_a",
+      "description": "Requested capture modes; availability and actual rate are not established by this configuration."
+    }
   },
-  "roi_normalized": [0.3173828125, 0.078125, 0.244140625, 0.87890625],
-  "threshold": 145,
-  "min_area_px": 120,
-  "presence_gate_enabled": true,
-  "target_dark_threshold": 125,
-  "target_min_row_fraction": 0.15,
-  "target_min_coverage": 0.80,
-  "target_centre_fraction": 0.60,
-  "target_max_width_fraction": 0.65,
+  "inspection_profiles": {
+    "plan_b": {
+      "roi_normalized": [
+        0.3173828125,
+        0.078125,
+        0.244140625,
+        0.87890625
+      ],
+      "threshold": 145,
+      "min_area_px": 120,
+      "presence_gate_enabled": true,
+      "target_dark_threshold": 125,
+      "target_min_row_fraction": 0.15,
+      "target_min_coverage": 0.8,
+      "target_centre_fraction": 0.6,
+      "target_max_width_fraction": 0.65,
+      "parameter_status": "UNVALIDATED_BASELINE",
+      "score_base": 0.55,
+      "score_area_divisor_px": 4000.0,
+      "score_ceiling": 0.95,
+      "reject_area_px": 1400.0,
+      "scratch_min_aspect": 2.0,
+      "contamination_min_area_px": 900.0,
+      "blur_kernel_size": 5,
+      "morph_kernel_size": 3
+    },
+    "plan_a": {
+      "roi_normalized": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "threshold": 145,
+      "min_area_px": 120,
+      "presence_gate_enabled": true,
+      "target_dark_threshold": 125,
+      "target_min_row_fraction": 0.15,
+      "target_min_coverage": 0.8,
+      "target_centre_fraction": 0.6,
+      "target_max_width_fraction": 0.65,
+      "parameter_status": "UNVALIDATED_BASELINE",
+      "score_base": 0.55,
+      "score_area_divisor_px": 4000.0,
+      "score_ceiling": 0.95,
+      "reject_area_px": 1400.0,
+      "scratch_min_aspect": 2.0,
+      "contamination_min_area_px": 900.0,
+      "blur_kernel_size": 5,
+      "morph_kernel_size": 3,
+      "description": "Development baseline only. Full-frame provisional ROI and copied heuristic defaults are not tuned for the USB camera."
+    }
+  },
   "jpeg_quality": 86,
   "reconnect_delay_s": 1.0,
   "open_timeout_ms": 5000,

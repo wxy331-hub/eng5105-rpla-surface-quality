@@ -1,7 +1,7 @@
 # ENG5105 — rPLA Filament Surface-Quality Monitoring
 
-A laboratory-scale machine-vision system that watches recycled PLA (rPLA) filament
-for visible surface anomalies while it moves, and records each finding as a
+A laboratory-scale machine-vision system that inspects held recycled PLA (rPLA) filament
+for visible surface anomalies, and records each finding as a
 traceable candidate event.
 
 Built for the ENG5105 Integrated Design brief from BioLoop Manufacturing Pty Ltd,
@@ -33,16 +33,26 @@ defect. No actuator output is enabled.
 Real-material calibration and validation begin only after the scheduled material
 receipt gate.
 
-## Architecture (Plan B)
+## Camera sources and shared pipeline
 
-Plan B uses the university-supplied hardware baseline. Plan A (a global-shutter
-camera on the Pi) is retained in the report as a comparator only; it is not built.
+The GUI opens the Plan A ALC-IMX258 USB/UVC simulation by default, using a
+separate generated image and candidate-evidence bundle. The dashboard, records,
+CSV export and health page share that source identity. It remains synthetic
+software evidence; physical USB capture is selected separately using the camera
+configuration below. The offline sample workbench is available in the GUI's
+left navigation.
+
+The resident software accepts either Plan A's ALC-IMX258 USB/UVC source or Plan B's
+ESP32S3/OV3660 network MJPEG source through the same `CameraSource` / `FramePacket`
+contract. Plan B remains the default runnable configuration; select `usb_uvc` for
+Plan A. The USB adapter has hardware-free software tests. Its requested capture
+modes and provisional inspection settings are not camera-performance results.
 
 ```
 Controlled optical head + rPLA filament
         |
         v
-XIAO ESP32S3 Sense / OV3660  ──MJPEG over controlled 2.4 GHz Wi-Fi──┐
+ALC-IMX258 USB/UVC or XIAO ESP32S3 Sense / OV3660 MJPEG ───────────┐
                                                                     v
                                           Raspberry Pi 4 (target deployment)
                                             - OpenCV candidate detection
@@ -53,7 +63,7 @@ XIAO ESP32S3 Sense / OV3660  ──MJPEG over controlled 2.4 GHz Wi-Fi──┐
                                           React GUI :5173
                                                     ^
 STM32 Nucleo-L432KC ────────────────────────────────┘
-  encoder, lighting, watchdog, inhibited safe output
+  lighting, watchdog, inhibited safe output (target interface)
 ```
 
 Acquisition and inspection run on **separate threads**. The reader publishes each
@@ -94,7 +104,25 @@ one:
 powershell -ExecutionPolicy Bypass -File .\scripts\start-rpla-live.ps1 -CameraIp 192.168.1.50
 ```
 
+Inspect the Plan A configuration without opening a camera or starting services:
+
+```powershell
+.\START_RPLA_LIVE.cmd -SourceType usb_uvc -CameraDevice 0 -CameraBackend dshow -CheckConfig
+```
+
+For USB acquisition, omit `-CheckConfig` when using the device. See
+[CAMERA_SOURCES.md](CAMERA_SOURCES.md) for source selection, independent inspection
+profiles, requested versus actual image sizes, and software checks.
+
 Offline demos that need no hardware:
+
+Week 7 adds a triggered sample workbench for six angles and two lighting modes.
+Run `START_RPLA_WEEK7.cmd` and open `http://127.0.0.1:5177`. It uses synthetic
+images and simulated MCU messages, archives raw/annotated images and retakes,
+and keeps physical measurements and outputs disabled. See
+[WEEK7_IMPLEMENTATION.md](WEEK7_IMPLEMENTATION.md) for the workflow, archive,
+verification and hardware preparation. The existing preview launchers remain
+available separately.
 
 ```bash
 .venv/Scripts/python.exe src/week3_offline_demo.py --config config/week3_offline.json --output data/output/week3_offline
@@ -111,16 +139,23 @@ cd gui-prototype && pnpm install && pnpm run dev
 | Path | Contents |
 |---|---|
 | `src/week3/` | Source-independent contracts: `FramePacket`, `DetectionRecord`, vision baseline, SQLite repository |
-| `src/week4/` | Camera connection policy, state monitor, one-slot buffer, ESP32 MJPEG adapter |
+| `src/week4/` | Camera connection policy, state monitor, one-slot buffer, ESP32 MJPEG and USB/UVC adapters |
+| `src/camera_config.py` | Source selection, per-camera capture/inspection profiles and legacy configuration support |
 | `src/live_service.py` | Resident service: acquisition/inspection threads, REST, MJPEG, WebSocket |
 | `config/` | Runtime configuration per scenario (resolution profiles, ROI, gates, thresholds) |
 | `tests/` | pytest suite, hardware-free via injected capture/source factories |
 | `gui-prototype/` | React operator interface |
 | `scripts/` | Launch, stop and scoped network-fault test scripts (PowerShell) |
 | `data/input`, `data/output` | Sample images and generated evidence |
+| `data/baselines/` | Byte-preserved historical source snapshots and their manifests |
 | `paper_rewriting_output/` | Bilingual proposal design report and its verification tooling |
 
 ## Reports
+
+The current development snapshot is indexed in [CURRENT_PROGRESS.md](CURRENT_PROGRESS.md).
+The report pair below retains the IMX415/XHU6001 concept revision; current
+application development targets the ALC-IMX258 USB/UVC path. The report camera
+selection has not yet been reconciled with that later software configuration.
 
 `paper_rewriting_output/` holds the two submission-facing manuscripts —
 `ENG5105_Proposal_Design_Report_EN.md` and `..._ZH.md`. Everything else in that
@@ -144,8 +179,17 @@ those eleven files `-text` so Git cannot normalise their line endings — any su
 rewrite silently invalidates every recorded hash and breaks the traceability
 claim for anyone who clones this.
 
-**If you change one of those files, you must recompute its hash and update both
-reports and `final_artifact_manifest.md` in the same change.**
+The three source/configuration files extended for USB acquisition now have frozen
+copies in `data/baselines/plan_b_before_uvc_20260906/`. Historical source references
+resolve to these exact bytes through `scripts/verify_evidence_baselines.py`;
+current source files are a later implementation. Other evidence records and
+the existing report artifacts still have to match their recorded hashes.
+The historical report-local verifier checks live paths only; use the version-aware
+verifier for the current development tree:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/verify_evidence_baselines.py
+```
 
 ## Academic note
 

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "calibration_id": null,
+  "status": "unvalidated",
+  "source_name": "PLAN_A_SYNTHETIC_TRIGGERED",
+  "image_size_px": [3840, 2160],
+  "roi_px": [168, 864, 3504, 432],
+  "lens": null,
+  "working_distance_mm": null,
+  "lighting_modes": ["bright_field", "dark_field"],
+  "fixture": null,
+  "axis": null,
+  "version": null,
+  "evidence_level": "PROPOSED_REQUIREMENT",
+  "evidence_refs": [],
+  "validated_at_utc": null,
+  "expires_at_utc": null,
+  "revoked": false,
+  "scale_mm_per_px": null
+}

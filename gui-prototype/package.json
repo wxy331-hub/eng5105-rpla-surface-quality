@@ -7,14 +7,15 @@
     "dev": "vite",
     "dev:live": "pnpm run sync:live && vite --mode live",
     "sync:live": "node scripts/sync-week4-live-evidence.mjs",
-    "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "build": "vite build",
+    "build:sites": "vite build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
-    "test:evidence": "node --test tests/offline-evidence.test.mjs tests/live-evidence.test.mjs",
+    "test:evidence": "node --test tests/offline-evidence.test.mjs tests/live-evidence.test.mjs tests/plan-a-evidence.test.mjs tests/week7-data-source.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
-    "@fontsource/inter": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",
     "@vitejs/plugin-react": "5.0.4",
     "react": "19.2.0",

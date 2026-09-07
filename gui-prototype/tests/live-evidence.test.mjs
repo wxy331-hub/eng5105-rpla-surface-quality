@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collapseCandidateEpisodes, createLiveEvidenceSnapshot, toGuiDetection } from "../src/services/inspectionDataSource.js";
+import {
+  collapseCandidateEpisodes,
+  createLiveEvidenceSnapshot,
+  LiveEvidenceInspectionDataSource,
+  ServiceInspectionDataSource,
+  toGuiDetection,
+} from "../src/services/inspectionDataSource.js";
+import { createResolutionMetadata } from "../src/services/resolutionMetadata.js";
 
 const summary = {
   camera_source: "ESP32S3_OV3660",
@@ -47,16 +54,171 @@ test("maps live database rows without claiming frame-specific images", () => {
 test("builds an honest OV3660 capture snapshot from the measured run", () => {
   const snapshot = createLiveEvidenceSnapshot(summary, [rawDetection], "/live-evidence/annotated_frame.jpg");
   assert.equal(snapshot.mode, "INSPECTION RUN");
+  assert.equal(snapshot.source, "ESP32S3 OV3660");
+  assert.equal(snapshot.cameraSource, "ESP32S3_OV3660");
+  assert.equal(snapshot.cameraPath, "PLAN_B_ESP32S3_OV3660_MJPEG");
+  assert.equal(snapshot.cameraPathLabel, "Plan B · ESP32S3 OV3660 MJPEG");
   assert.equal(snapshot.resolution, "2048 × 1536");
   assert.equal(snapshot.measuredFps, 2.79);
   assert.equal(snapshot.processingLatencyMs, 12.3);
-  assert.ok(snapshot.postDecodeToGuiLatencyMs >= 0);
+  assert.equal(snapshot.postDecodeToGuiLatencyMs, null);
   assert.equal(snapshot.framesGenerated, 12);
   assert.equal(snapshot.framesProcessedWhenSafe, 10);
   assert.equal(snapshot.warmupFramesSkipped, 2);
   assert.equal(snapshot.rplaDefectPerformanceVerified, false);
   assert.equal(snapshot.physicalMeasurementsAvailable, false);
+  assert.equal(snapshot.calibrationId, null);
+  assert.equal(snapshot.physicalOutputsAllowed, false);
   assert.equal(snapshot.imageFrameNumber, 11);
+});
+
+test("maps Plan A service metadata and reports delivered dimensions without upgrading evidence", () => {
+  const snapshot = createLiveEvidenceSnapshot({
+    ...summary,
+    camera_source: "ALC_IMX258_USB",
+    camera_path: "PLAN_A_ALC_IMX258_USB_UVC",
+    source_type: "usb_uvc",
+    framesize_name: "UHD",
+    frame_width_px: 1920,
+    frame_height_px: 1080,
+    requested_width_px: 3840,
+    requested_height_px: 2160,
+    requested_pixel_format: "MJPG",
+    requested_fps: 30,
+    hardware_stream_verified: false,
+  }, [], "http://127.0.0.1:8765/api/frame.jpg");
+
+  assert.equal(snapshot.source, "ALC-IMX258 USB");
+  assert.equal(snapshot.cameraSource, "ALC_IMX258_USB");
+  assert.equal(snapshot.cameraPath, "PLAN_A_ALC_IMX258_USB_UVC");
+  assert.equal(snapshot.cameraPathLabel, "Plan A · ALC-IMX258 USB UVC");
+  assert.equal(snapshot.sourceType, "usb_uvc");
+  assert.equal(snapshot.framesizeName, "UHD");
+  assert.equal(snapshot.resolution, "1920 × 1080");
+  assert.equal(snapshot.resolutionKind, "decoded");
+  assert.equal(snapshot.frameWidthPx, 1920);
+  assert.equal(snapshot.frameHeightPx, 1080);
+  assert.equal(snapshot.requestedResolution, "3840 × 2160");
+  assert.equal(snapshot.requestedPixelFormat, "MJPG");
+  assert.equal(snapshot.requestedFps, 30);
+  assert.equal(snapshot.evidenceLevel, "LIVE_INTEGRATION_ONLY");
+  assert.equal(snapshot.hardwarePerformanceVerified, false);
+  assert.equal(snapshot.rplaDefectPerformanceVerified, false);
+  assert.equal(snapshot.physicalMeasurementsAvailable, false);
+});
+
+test("maps the explicit Plan B service contract without changing its source or dimensions", () => {
+  const snapshot = createLiveEvidenceSnapshot({
+    ...summary,
+    camera_path: "PLAN_B_ESP32S3_OV3660_MJPEG",
+    source_type: "esp32_mjpeg",
+    framesize_name: "SVGA",
+    frame_width_px: 800,
+    frame_height_px: 600,
+  }, [], "http://127.0.0.1:8765/api/frame.jpg");
+
+  assert.equal(snapshot.source, "ESP32S3 OV3660");
+  assert.equal(snapshot.cameraPathLabel, "Plan B · ESP32S3 OV3660 MJPEG");
+  assert.equal(snapshot.sourceType, "esp32_mjpeg");
+  assert.equal(snapshot.framesizeName, "SVGA");
+  assert.equal(snapshot.resolution, "800 × 600");
+});
+
+test("loading sources remain unidentified and service images use the shared API", () => {
+  for (const source of [new ServiceInspectionDataSource(), new LiveEvidenceInspectionDataSource()]) {
+    const snapshot = source.getSnapshot();
+    assert.equal(snapshot.source, "Waiting for camera source");
+    assert.equal(snapshot.cameraSource, null);
+    assert.equal(snapshot.cameraPath, null);
+    assert.equal(snapshot.cameraPathLabel, "Camera path unavailable");
+    assert.equal(snapshot.sourceType, null);
+    assert.equal(snapshot.resolution, "Waiting for frame");
+    assert.equal(snapshot.automaticActionsAllowed, false);
+  }
+  const serviceSnapshot = new ServiceInspectionDataSource().getSnapshot();
+  assert.equal(serviceSnapshot.streamUrl, "http://127.0.0.1:8765/api/stream.mjpg");
+  assert.equal(new URL(serviceSnapshot.streamUrl).origin, new URL(serviceSnapshot.imageUrl).origin);
+});
+
+test("missing and unfamiliar metadata do not inherit a camera identity or invented resolution", () => {
+  const missing = createLiveEvidenceSnapshot({
+    ...summary,
+    camera_source: undefined,
+    frame_width_px: 0,
+    frame_height_px: 0,
+  }, [], "/api/frame.jpg");
+  assert.equal(missing.source, "Waiting for camera source");
+  assert.equal(missing.cameraPath, null);
+  assert.equal(missing.resolution, "Waiting for frame");
+
+  const unfamiliar = createLiveEvidenceSnapshot({
+    ...summary,
+    camera_source: "TEST_CAMERA",
+    source_type: "usb_uvc",
+  }, [], "/api/frame.jpg");
+  assert.equal(unfamiliar.source, "TEST CAMERA");
+  assert.equal(unfamiliar.cameraPath, null);
+  assert.equal(unfamiliar.cameraPathLabel, "Camera path unavailable");
+  assert.equal(unfamiliar.sourceType, "usb_uvc");
+});
+
+test("a requested mode never fills missing or invalid image dimensions", () => {
+  for (const [widthPx, heightPx] of [[0, 0], [640, null], [NaN, 360], [640.5, 360], ["640", "360"]]) {
+    const metadata = createResolutionMetadata({
+      widthPx, heightPx, requestedWidthPx: 3840, requestedHeightPx: 2160,
+      requestedFps: 30, requestedPixelFormat: "MJPG",
+    });
+    assert.equal(metadata.resolution, "Waiting for frame");
+    assert.equal(metadata.resolutionKind, "unavailable");
+    assert.equal(metadata.frameWidthPx, null);
+    assert.equal(metadata.frameHeightPx, null);
+    assert.equal(metadata.requestedResolution, "3840 × 2160");
+  }
+  const absent = createResolutionMetadata({ widthPx: 640, heightPx: 360, synthetic: true });
+  assert.equal(absent.resolution, "640 × 360");
+  assert.equal(absent.resolutionKind, "synthetic");
+  assert.equal(absent.requestedResolution, null);
+  assert.equal(absent.requestedFps, null);
+});
+
+test("only a fresh current service frame can provide a telemetry arrival interval", () => {
+  const receivedAtMs = Date.parse("2026-09-07T01:00:00.000Z");
+  const currentFrame = {
+    ...summary,
+    camera_state: "HEALTHY",
+    current_frame_id: 11,
+    frame_received_at_utc: new Date(receivedAtMs).toISOString(),
+    snapshot_published_at_utc: new Date(receivedAtMs + 20).toISOString(),
+    frame_age_ms: 20,
+    stale_after_ms: 1000,
+  };
+  const make = (changes = {}, serviceFrame = true, nowMs = receivedAtMs + 35) => createLiveEvidenceSnapshot(
+    { ...currentFrame, ...changes }, [], "/api/frame.jpg", { serviceFrame, nowMs },
+  );
+  assert.equal(make().postDecodeToGuiLatencyMs, 35);
+  assert.equal(make({}, false).postDecodeToGuiLatencyMs, null);
+  assert.equal(make({}, true, receivedAtMs + 86400000).postDecodeToGuiLatencyMs, null);
+  for (const changes of [
+    { camera_state: "DISCONNECTED" },
+    { frame_age_ms: 1001 },
+    { current_frame_id: undefined },
+    { frame_width_px: 0 },
+    { stale_after_ms: undefined },
+    { snapshot_published_at_utc: undefined },
+    { frame_received_at_utc: "invalid" },
+    { frame_received_at_utc: new Date(receivedAtMs + 100).toISOString() },
+  ]) assert.equal(make(changes).postDecodeToGuiLatencyMs, null);
+});
+
+test("physical measurements require explicit calibration provenance", () => {
+  for (const calibrationId of [undefined, null, "", "  "]) {
+    const snapshot = createLiveEvidenceSnapshot({
+      ...summary, physical_measurements_available: true, calibration_id: calibrationId,
+    }, [], "/api/frame.jpg");
+    assert.equal(snapshot.calibrationId, null);
+    assert.equal(snapshot.physicalMeasurementsAvailable, false);
+    assert.equal(snapshot.physicalOutputsAllowed, false);
+  }
 });
 
 test("maps resident service waiting state without creating a false detection", () => {

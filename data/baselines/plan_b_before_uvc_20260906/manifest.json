@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "purpose": "Preserve the Plan B source bytes cited by historical evidence while the active source adds USB acquisition. These snapshots are source-code evidence, not new hardware results.",
+  "entries": [
+    {
+      "source_path": "config/live_service.json",
+      "snapshot_path": "data/baselines/plan_b_before_uvc_20260906/config/live_service.json",
+      "sha256": "CD63D586FAC65FD96BD66666D0EBEC535E7A1AE009FA8B35B471B84F4C7F1438"
+    },
+    {
+      "source_path": "src/live_service.py",
+      "snapshot_path": "data/baselines/plan_b_before_uvc_20260906/src/live_service.py",
+      "sha256": "551492CEA484C71EB2021B9C24766542B6D8E36A7F3D1C0FFD58FEB33FA91D4A"
+    },
+    {
+      "source_path": "src/week3/vision.py",
+      "snapshot_path": "data/baselines/plan_b_before_uvc_20260906/src/week3/vision.py",
+      "sha256": "A07C139F14C31C02B1EC209575A9579AE4FEEBC4DC1676050C2D0A760017B3F8"
+    }
+  ]
+}

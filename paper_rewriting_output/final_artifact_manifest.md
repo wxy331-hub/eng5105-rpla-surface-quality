@@ -1,5 +1,14 @@
 # Final Artifact Manifest
 
+Current final report: the user-confirmed PDF in
+[final/Proposal_Design_Report.pdf](final/Proposal_Design_Report.pdf), designated
+on 2026-09-07. Its checksum and provenance are recorded separately in
+[final/manifest.json](final/manifest.json).
+
+The table, review history and delivery boundary below describe the earlier
+paired Markdown/DOCX revision. Their original checksums remain historical
+evidence and do not identify or supersede the final PDF.
+
 | Artifact | SHA-256 | Final validation |
 |---|---|---|
 | `ENG5105_Proposal_Design_Report_EN.md` | `8EEA870C450F554E541BB349AAC3155E8A5B60D0D9D4DC7F104BFA5BC2DD0904` | 47 references; 169 expanded citation uses; no project-file/path references in the body; Tables 1–20; Figures 1–4; nine equations |

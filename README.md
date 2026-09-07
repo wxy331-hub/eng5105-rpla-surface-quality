@@ -153,16 +153,17 @@ cd gui-prototype && pnpm install && pnpm run dev
 ## Reports
 
 The current development snapshot is indexed in [CURRENT_PROGRESS.md](CURRENT_PROGRESS.md).
-The report pair below retains the IMX415/XHU6001 concept revision; current
-application development targets the ALC-IMX258 USB/UVC path. The report camera
-selection has not yet been reconciled with that later software configuration.
+The final report is the user-confirmed
+[Proposal Design Report PDF](paper_rewriting_output/final/Proposal_Design_Report.pdf),
+preserved unchanged from the supplied file. Its cover and Section 5.2 specify
+the ALC-IMX258-LY0001-ZB V1 module. The [version record](paper_rewriting_output/final/README.md)
+identifies its checksum and the scope of the historical manuscripts below.
 
-`paper_rewriting_output/` holds the two submission-facing manuscripts —
-`ENG5105_Proposal_Design_Report_EN.md` and `..._ZH.md`. Everything else in that
-directory is a research or drafting record; where they disagree, the two final
-reports and their Appendix A are authoritative.
+`paper_rewriting_output/` also retains the earlier paired manuscripts —
+`ENG5105_Proposal_Design_Report_EN.md`, `..._ZH.md` and their generated DOCX files —
+for historical traceability. They are not the source of the final PDF.
 
-Both reports are kept structurally paired. Verify with:
+Verify the historical manuscript pair with:
 
 ```bash
 .venv/Scripts/python.exe paper_rewriting_output/validate_paired_reports.py
@@ -173,8 +174,8 @@ numbering, evidence labels and critical numeric tokens across both languages.
 
 ### Evidence files are hash-anchored
 
-Appendix A of the report records a SHA-256 for nine internal evidence records,
-and the artifact manifest records one for each report. `.gitattributes` marks
+Appendix A of the historical manuscript pair records a SHA-256 for nine internal
+evidence records, and its artifact manifest records one for each manuscript. `.gitattributes` marks
 those eleven files `-text` so Git cannot normalise their line endings — any such
 rewrite silently invalidates every recorded hash and breaks the traceability
 claim for anyone who clones this.

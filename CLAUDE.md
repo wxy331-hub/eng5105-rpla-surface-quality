@@ -35,6 +35,12 @@ required interfaces and formats, then this file, then existing implementation.
 
 This is the core value of the project and the easiest thing to break.
 
+- The user-confirmed final report is `paper_rewriting_output/final/Proposal_Design_Report.pdf`.
+  Its version and checksum are recorded alongside it. Preserve the PDF unchanged;
+  the older paired Markdown/DOCX files and their build tools are historical records.
+  The final report's designation does not cancel later explicit user decisions
+  about GUI behaviour. Record any implementation differences separately.
+
 - Every result carries an evidence label: `OFFLINE_SYNTHETIC_ONLY`,
   `OFFLINE_FAULT_INJECTION_ONLY`, `LIVE_INTEGRATION_ONLY`,
   `PENDING_REAL_MATERIAL`, `PROPOSED_REQUIREMENT`, `PROPOSED_INTERFACE`.

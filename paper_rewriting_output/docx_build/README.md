@@ -1,6 +1,10 @@
 # Word build for the paired proposal reports
 
-The two Markdown reports one directory up are the hash-anchored source of record.
+This toolchain reconstructs the historical paired DOCX revision. The current
+user-confirmed final report is [the supplied PDF](../final/Proposal_Design_Report.pdf);
+these scripts neither generate nor replace that file.
+
+The two Markdown reports one directory up are the hash-anchored source of this historical revision.
 `ENG5105_Proposal_Design_Report_EN.docx` and `..._ZH.docx` are generated from them
 for submission and carry no hash record of their own.
 

@@ -150,47 +150,38 @@ export function toGuiDetection(item, imageUrl) {
   };
 }
 
-// Intersection over union split one static mark into new events whenever its
-// thresholded box grew or shrank between frames (area changed up to about 2.5x on
-// the 2026-10-12 bench). A box still continues an event if it covers at least
-// half of the smaller box and the areas differ by at most MAX_AREA_RATIO; the
-// ratio keeps a separate defect nested inside a larger one apart (Codex review
-// 2026-10-12). Among matches, the highest IoU wins so identities do not swap.
-const MAX_AREA_RATIO = 4;
-
-function bboxMatch(left, right) {
+function bboxIoU(left, right) {
   const [leftX, leftY, leftWidth, leftHeight] = left;
   const [rightX, rightY, rightWidth, rightHeight] = right;
   const overlapWidth = Math.max(0, Math.min(leftX + leftWidth, rightX + rightWidth) - Math.max(leftX, rightX));
   const overlapHeight = Math.max(0, Math.min(leftY + leftHeight, rightY + rightHeight) - Math.max(leftY, rightY));
   const intersection = overlapWidth * overlapHeight;
-  const leftArea = leftWidth * leftHeight;
-  const rightArea = rightWidth * rightHeight;
-  const smaller = Math.min(leftArea, rightArea);
-  const larger = Math.max(leftArea, rightArea);
-  if (smaller <= 0 || larger > MAX_AREA_RATIO * smaller) return { overlap: 0, iou: 0 };
-  return { overlap: intersection / smaller, iou: intersection / (leftArea + rightArea - intersection) };
+  const union = leftWidth * leftHeight + rightWidth * rightHeight - intersection;
+  return union > 0 ? intersection / union : 0;
 }
 
 // Every processed live frame records its candidates. On the 2026-10-12 bench one
 // marker dot (about 1.3 frames/s, a few frames not judged in between) gave 631
-// records and 52 displayed events under a one-frame gap and IoU >= 0.5; a gap of
-// up to five frames (about 4 s) and the overlap of the smaller box gave 18, most
-// of the rest from moving the specimen.
-export function collapseCandidateEpisodes(detections, { maxFrameGap = 5, minOverlap = 0.5 } = {}) {
+// records and 52 displayed events under a one-frame gap; allowing a gap of up to
+// five frames (about 4 s) gives about 27. Matching stays on IoU >= 0.5: the share
+// of the smaller box also merged a separate defect nested inside a larger one,
+// and capping the area ratio then split one mark whose box shrank with the
+// lighting (Codex review 2026-10-12). Known limit: two nested defects of similar
+// size can still swap events, since each record takes its best match in turn.
+export function collapseCandidateEpisodes(detections, { maxFrameGap = 5, minIou = 0.5 } = {}) {
   const sorted = [...detections].sort((left, right) => left.frameId - right.frameId);
   const episodes = [];
 
   for (const detection of sorted) {
     let previous = null;
-    let bestIou = -1;
+    let bestIou = minIou;
     // ponytail: scan the bounded snapshot; index active events if history grows.
     for (const episode of episodes) {
       const gap = detection.frameId - episode.frameEnd;
       if (episode.batchId !== detection.batchId || episode.type !== detection.type
         || gap <= 0 || gap > maxFrameGap) continue;
-      const { overlap, iou } = bboxMatch(episode.lastBboxPx, detection.bboxPx);
-      if (overlap >= minOverlap && iou > bestIou) { previous = episode; bestIou = iou; }
+      const iou = bboxIoU(episode.lastBboxPx, detection.bboxPx);
+      if (iou >= bestIou) { previous = episode; bestIou = iou; }
     }
 
     if (!previous) {

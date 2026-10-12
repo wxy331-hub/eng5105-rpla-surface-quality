@@ -10,8 +10,15 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $ruleName = "rPLA OV3660 real network fault test"
 if (-not $OutputPath) {
-    $OutputPath = Join-Path $projectRoot "data\output\network_fault\network_fault_20260811.json"
+    $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 10)
+    $OutputPath = Join-Path $projectRoot "data\output\network_fault\network_fault_$runId.json"
 }
+$OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+if (Test-Path -LiteralPath $OutputPath) {
+    throw "Output already exists: $OutputPath"
+}
+$outputDirectory = Split-Path -Parent $OutputPath
+New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
 function Get-Health {
     Invoke-RestMethod -Uri "$ApiBaseUrl/api/health" -TimeoutSec 3
@@ -137,8 +144,13 @@ $result = [ordered]@{
     firewall_rule_removed = -not [bool](Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)
 }
 
-$outputDirectory = Split-Path -Parent $OutputPath
-New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-$result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutputPath -Encoding utf8
+# CreateNew also refuses a file created by another run during fault injection.
+$outputStream = [System.IO.File]::Open($OutputPath, [System.IO.FileMode]::CreateNew)
+try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($result | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
+    $outputStream.Write($bytes, 0, $bytes.Length)
+} finally {
+    $outputStream.Dispose()
+}
 $result | ConvertTo-Json -Depth 5
 Write-Host "Saved: $OutputPath"

@@ -8,13 +8,27 @@ preview, candidate processing, SQLite records, REST/WebSocket API and GUI.
 | `esp32_mjpeg` | ESP32S3 / OV3660 HTTP MJPEG | SVGA, 800 x 600 |
 | `usb_uvc` | ALC-IMX258 local USB/UVC device | UHD, 3840 x 2160, MJPG, 30 FPS request |
 
-The default source remains `esp32_mjpeg`. USB modes are configuration requests,
+The Plan A camera/sample launcher `START_RPLA_WEEK8.cmd` selects `usb_uvc`.
+The legacy `START_RPLA_LIVE.cmd` default remains `esp32_mjpeg`. USB modes are configuration requests,
 not enumerated camera capabilities or measured frame rates. The USB adapter
 rejects failed mode requests and frames whose actual size differs from the
 selected profile. The GUI shows received dimensions; before the first valid
 frame it shows a waiting state.
 
 ## Windows launcher
+
+For the current GUI and six-angle/two-light sample workflow:
+
+```powershell
+.\START_RPLA_WEEK8.cmd -CameraDevice 0 -CameraBackend dshow -Resolution UHD -CheckConfig
+.\START_RPLA_WEEK8.cmd -CameraDevice 0 -CameraBackend dshow -Resolution UHD
+```
+
+This starts the combined API on 8765 and GUI on 5177 even when no camera is
+connected. Capture is enabled only with fresh healthy frames; the service never
+substitutes synthetic images. The same camera reader provides continuous preview
+and triggered sample frames. See [Week 8 implementation](WEEK8_IMPLEMENTATION.md).
+Stop this pair with `STOP_RPLA_WEEK8.cmd` before running another camera client.
 
 Validate configuration without camera, network discovery or process startup:
 

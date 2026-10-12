@@ -74,6 +74,26 @@ def test_opens_requested_backend_and_requests_mode_without_claiming_health(backe
     source.disconnect()
 
 
+@pytest.mark.parametrize("fps", [None, 30])
+def test_dshow_retains_mjpg_when_mode_changes_reset_driver_format(fps):
+    class FormatResettingCapture(FakeCapture):
+        def set(self, prop, value):
+            accepted = super().set(prop, value)
+            # The real DirectShow device renegotiates YUY2 on mode changes.
+            if prop in {cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS}:
+                self.properties[cv2.CAP_PROP_FOURCC] = cv2.VideoWriter_fourcc(*"YUY2")
+            return accepted
+
+    capture = FormatResettingCapture()
+    source = UsbUvcSource(1, width_px=3840, height_px=2160, backend="dshow", fps=fps,
+                          capture_factory=lambda: capture)
+    try:
+        source.connect()
+        assert source.reported_properties["fourcc"] == cv2.VideoWriter_fourcc(*"MJPG")
+    finally:
+        source.disconnect()
+
+
 @pytest.mark.parametrize("device", [-1, True, 1.5, None, "", "-1", "http://camera/stream",
     "rtsp://camera/live", "C:\\video.avi", "clip.mp4", "/tmp/video0", "/dev/video0/other",
     "/dev/v4l/by-id/..", "/dev/v4l/by-id/../video0"])

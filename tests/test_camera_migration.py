@@ -31,9 +31,20 @@ def clear_camera_environment(monkeypatch):
 
 def usb_config(monkeypatch, tmp_path):
     monkeypatch.setenv("RPLA_SOURCE_TYPE", "usb_uvc")
+    # These transport tests rely on the threshold baseline producing candidates
+    # on the synthetic frames; the static branch has its own tests.
     return replace(load_service_config(CONFIG), expected_width_px=320, expected_height_px=180,
                    roi_px=(20, 40, 280, 100), presence_gate_enabled=False,
-                   database_path=tmp_path / "usb.db", reconnect_delay_s=0.01)
+                   database_path=tmp_path / "usb.db", reconnect_delay_s=0.01,
+                   vision_algorithm="baseline_threshold")
+
+
+def test_plan_a_selects_the_static_geometry_branch_and_plan_b_keeps_the_baseline(monkeypatch):
+    assert load_service_config(CONFIG).vision_algorithm == "baseline_threshold"
+    monkeypatch.setenv("RPLA_SOURCE_TYPE", "usb_uvc")
+    plan_a = load_service_config(CONFIG)
+    assert plan_a.vision_algorithm == "static_rpla_geometry"
+    assert plan_a.static_options["filament_axis"] == "auto"
 
 
 def test_source_profiles_are_independent_and_usb_ignores_esp32_environment(monkeypatch):

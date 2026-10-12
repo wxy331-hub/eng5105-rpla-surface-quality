@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from src.inspection.factory import ALGORITHMS, STATIC_ALGORITHM
+from src.inspection.geometry import GeometryParams
+from src.inspection.factory import surface_components
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +54,9 @@ class LiveServiceConfig:
     recovery_frames: int
     cors_allow_origins: tuple[str, ...]
     database_path: Path
+    vision_algorithm: str = "baseline_threshold"
+    static_options: dict[str, Any] = field(default_factory=dict)
+    surface_options: dict[str, Any] = field(default_factory=dict)
 
     @property
     def stream_url(self) -> str:
@@ -162,6 +169,18 @@ def load_service_config(path: Path | None = None) -> LiveServiceConfig:
     vision_names = ("score_base", "score_area_divisor_px", "score_ceiling", "reject_area_px",
                     "scratch_min_aspect", "contamination_min_area_px", "blur_kernel_size", "morph_kernel_size")
     vision_options = {name: inspection[name] for name in vision_names if name in inspection}
+    vision_algorithm = str(inspection.get("algorithm", "baseline_threshold"))
+    static_options = dict(inspection.get("static_rpla", {}))
+    surface_options = dict(inspection.get("static_surface") or {})
+    if vision_algorithm not in ALGORITHMS:
+        raise ValueError(f"unknown vision algorithm: {vision_algorithm}")
+    if vision_algorithm == STATIC_ALGORITHM:
+        # Validate now so a bad profile fails at start-up, not on the first frame.
+        GeometryParams.from_mapping({**static_options, "search_roi_px": roi_px})
+        if surface_options:
+            # Loads (and so validates) the reference too: a missing or altered
+            # reference must stop start-up, not surface as a wrong grade later.
+            surface_components(surface_options)
     source_name = str(source["source_name"]).strip()
     if not source_name:
         raise ValueError("source_name must not be empty")
@@ -190,4 +209,5 @@ def load_service_config(path: Path | None = None) -> LiveServiceConfig:
         stale_after_s=float(raw.get("stale_after_s", 1.0)),
         disconnect_after_s=float(raw.get("disconnect_after_s", 2.0)), recovery_frames=int(raw.get("recovery_frames", 3)),
         cors_allow_origins=cors_origins, database_path=database_path,
+        vision_algorithm=vision_algorithm, static_options=static_options, surface_options=surface_options,
     )

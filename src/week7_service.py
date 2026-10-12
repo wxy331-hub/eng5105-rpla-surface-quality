@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sqlite3
 from typing import Literal
 
 from fastapi import FastAPI, Request
@@ -28,7 +30,9 @@ class CaptureRequest(BaseModel):
     retake: StrictBool = False
 
 
-def create_app(root: Path, *, workflow: SampleWorkflow | None = None) -> FastAPI:
+def create_app(root: Path, *, workflow: SampleWorkflow | None = None,
+               cors_allow_origins: Sequence[str] | None = None) -> FastAPI:
+    """Build sample routes with local GUI origins unless explicitly configured."""
     runtime = workflow or SampleWorkflow(root)
 
     @asynccontextmanager
@@ -40,8 +44,9 @@ def create_app(root: Path, *, workflow: SampleWorkflow | None = None) -> FastAPI
     app.state.workflow = runtime
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[f"http://{host}:{port}" for host in ("127.0.0.1", "localhost")
-                       for port in (5173, 5177)],
+        allow_origins=list(cors_allow_origins) if cors_allow_origins is not None else [
+            f"http://{host}:{port}" for host in ("127.0.0.1", "localhost") for port in (5173, 5177)
+        ],
         allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"],
     )
 
@@ -55,7 +60,8 @@ def create_app(root: Path, *, workflow: SampleWorkflow | None = None) -> FastAPI
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(OSError)
-    async def archive_error(_: Request, exc: OSError):
+    @app.exception_handler(sqlite3.Error)
+    async def archive_error(_: Request, exc: OSError | sqlite3.Error):
         return JSONResponse(status_code=503, content={"detail": "Evidence archive unavailable: " + str(exc)})
 
     @app.get("/api/week7/health")

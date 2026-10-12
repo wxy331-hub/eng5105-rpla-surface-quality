@@ -1,10 +1,54 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WEEK7_ANGLES, WEEK7_LIGHTS, Week7ApiError, Week7DataSource } from "../src/services/week7DataSource.js";
+import { readFileSync } from "node:fs";
+import { WEEK7_ANGLES, WEEK7_LIGHTS, Week7ApiError, Week7DataSource, sampleCaptureState } from "../src/services/week7DataSource.js";
 
 function response(payload, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
+
+test("sample health polling backs off, recovers, and stops after unmount", async () => {
+  // Run the component's polling effect with a fake timer, without a browser or service.
+  const source = readFileSync(new URL("../src/Week7SamplePanel.jsx", import.meta.url), "utf8");
+  const effect = source.match(/\/\/ Poll only while the workbench is mounted\.[\s\S]*?useEffect\(\(\) => \{([\s\S]*?)\}, \[dataSource\]\);/);
+  assert.ok(effect, "the sample health polling effect must exist");
+  const runEffect = new Function("dataSource", "window", "setServiceHealth", "setPendingDeletions", "pendingDeletionSessions", effect[1]);
+  let timer;
+  let fail = true;
+  let release;
+  let pending = false;
+  const delays = [];
+  const updates = [];
+  const health = { camera: { connected: true, capture_available: true } };
+  const cleanup = runEffect({ getHealth: async () => {
+    if (pending) await new Promise((resolve) => { release = resolve; });
+    if (fail) throw new Error("service unavailable");
+    return health;
+  } }, {
+    setTimeout(callback, delay) { timer = callback; delays.push(delay); return callback; },
+    clearTimeout(handle) { if (timer === handle) timer = null; },
+  }, (value) => updates.push(value), () => {}, () => []);
+
+  for (let failure = 0; failure < 5; failure += 1) await timer();
+  assert.deepEqual(delays, [2000, 4000, 8000, 16000, 30000, 30000]);
+  assert.deepEqual(updates, [null, null, null, null, null], "each failure revokes capture");
+  fail = false;
+  await timer();
+  assert.equal(delays.at(-1), 2000, "the first success restores normal polling");
+  assert.equal(updates.at(-1), health);
+  fail = true;
+  await timer();
+  assert.equal(delays.at(-1), 4000, "a new failure starts from the normal interval");
+
+  pending = true;
+  const inFlight = timer();
+  cleanup();
+  const countBeforeCompletion = [delays.length, updates.length];
+  release();
+  await inFlight;
+  assert.equal(timer, null);
+  assert.deepEqual([delays.length, updates.length], countBeforeCompletion, "an unmounted request must not update state or schedule another poll");
+});
 
 test("a sample session can be created, resumed, captured and retaken one view at a time, and completed", async () => {
   const calls = [];
@@ -84,7 +128,7 @@ test("sample and capture identifiers stay inside a single encoded API path segme
   const adapter = new Week7DataSource({ fetchImpl: async (url) => { urls.push(url); return response({}); } });
   await adapter.getSample("specimen / 2?");
   assert.ok(urls[0].endsWith("/samples/specimen%20%2F%202%3F"));
-  assert.equal(adapter.imageUrl("capture / 3", "raw"), "http://127.0.0.1:8766/api/week7/captures/capture%20%2F%203/raw.png");
+  assert.equal(adapter.imageUrl("capture / 3", "raw"), "http://127.0.0.1:8765/api/week7/captures/capture%20%2F%203/raw.png");
   assert.ok(adapter.imageUrl("capture-3", "annotated").endsWith("/capture-3/annotated.png"));
   assert.ok(adapter.exportUrl("session / 3").endsWith("/samples/session%20%2F%203/export.csv"));
   assert.equal(urls.length, 1, "image and export links do not fetch until requested by the user/browser");
@@ -186,4 +230,27 @@ test("unavailable service and invalid responses do not appear as empty archives"
   await assert.rejects(malformed.listSamples(), /Invalid samples response/);
   const notJson = new Week7DataSource({ fetchImpl: async () => ({ ok: false, status: 502, json: async () => { throw new Error("not JSON"); } }) });
   await assert.rejects(notJson.listSamples(), /HTTP 502/);
+});
+
+test("camera preview and reconnect share the capture service origin", async () => {
+  const calls = [];
+  const source = new Week7DataSource({ fetchImpl: async (url, options) => { calls.push({ url, options }); return response({ status: "RECONNECTING" }); } });
+  assert.equal(source.previewUrl(3), "http://127.0.0.1:8765/api/stream.mjpg?session=3");
+  await source.reconnect();
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/api/control/reconnect");
+  assert.equal(calls[0].options.method, "POST");
+});
+
+test("hardware capture fails closed until the service grants a fresh connected frame", async () => {
+  for (const health of [null, {}, { camera: { connected: true } }, { camera: { connected: false, capture_available: true } }, { camera: { connected: true, capture_available: false } }]) {
+    assert.equal(sampleCaptureState(health).available, false);
+    assert.equal(sampleCaptureState(health).synthetic, false);
+  }
+  const live = { evidence_label: "LIVE_INTEGRATION_ONLY", source_name: "ALC_IMX258_USB", camera: { connected: true, capture_available: true, status: "HEALTHY" }, image_size_px: [3840, 2160] };
+  assert.equal(sampleCaptureState(live).available, true);
+  assert.equal(sampleCaptureState(live).sourceName, "ALC_IMX258_USB");
+  assert.equal(sampleCaptureState({ evidence_label: "OFFLINE_SYNTHETIC_ONLY" }).available, true);
+  const waiting = { image_size_px: null, camera: { connected: false, capture_available: false } };
+  const adapter = new Week7DataSource({ fetchImpl: async () => response(waiting) });
+  assert.equal(await adapter.getHealth(), waiting, "missing hardware frames still expose connection state");
 });

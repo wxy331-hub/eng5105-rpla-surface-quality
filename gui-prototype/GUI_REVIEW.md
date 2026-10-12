@@ -1,8 +1,9 @@
 # Plan A GUI review
 
 This is the layout-review snapshot from before the UHD synthetic-data migration.
-Its screenshots retain the image dimensions observed at that time. The current
-native UHD defaults and subsequent validation are in [PLAN_A_SYNTHETIC.md](PLAN_A_SYNTHETIC.md).
+Its screenshots retain the image dimensions observed at that time. The later
+offline UHD configuration and validation are in [PLAN_A_SYNTHETIC.md](PLAN_A_SYNTHETIC.md).
+The current camera-service default and sample capture are described in [README.md](README.md).
 
 Reviewed on 2026-09-07 against the supplied screen, the current Plan A sample workflow, `CLAUDE.md`, and this GUI's `AGENTS.md`. Scope: inspection, candidate records, system health, and offline sample capture in English and Simplified Chinese. The installed Chrome browser was used after the in-app browser runtime failed to initialize.
 

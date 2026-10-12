@@ -48,6 +48,11 @@ The service and GUI connection are live. The material-presence gate and bright-r
 - The GUI displays `Post-decode-to-GUI latency`. This begins when OpenCV has received a decoded frame; it is not a sensor exposure timestamp.
 - Results from 2026-08-11 are documented in `LIVE_PATH_TEST_RESULTS_2026-08-11.md`.
 
+Both diagnostics create a new timestamped JSON filename on every run, under
+`data/output/latency/` or `data/output/network_fault/`. `--output` (Python) and
+`-OutputPath` (PowerShell) accept a new destination; an existing destination is
+rejected before camera/network access. The dated 2026-08-11 evidence stays intact.
+
 ## 一键使用
 
 1. 给 XIAO ESP32S3 Sense 摄像头上电，并让电脑连接同一网络。

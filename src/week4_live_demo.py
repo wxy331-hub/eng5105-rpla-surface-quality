@@ -8,7 +8,6 @@ import json
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -68,15 +67,22 @@ def run_live_pipeline(
     *,
     roi_override: tuple[int, int, int, int] | None = None,
     frame_count_override: int | None = None,
-    capture_factory: Callable[[str], Any] = cv2.VideoCapture,
+    capture_factory: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
-    """Acquire real frames and verify integration without claiming defect accuracy."""
+    """Read an HTTP(S) camera stream; injected capture I/O remains offline evidence."""
     if "<ESP32_IP>" in stream_url:
         raise ValueError("replace <ESP32_IP> with the actual device address")
     frame_count = frame_count_override or int(config["frame_count"])
     if frame_count <= 0:
         raise ValueError("frame_count must be positive")
     roi_px = roi_override or tuple(int(value) for value in config["roi_px"])
+    hardware_source = capture_factory is None
+    evidence_level = EVIDENCE_LEVEL if hardware_source else "OFFLINE_FAULT_INJECTION_ONLY"
+    source = Esp32MjpegSource(
+        stream_url,
+        source_name=str(config["source_name"]),
+        capture_factory=cv2.VideoCapture if capture_factory is None else capture_factory,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     database_path = output_dir / "week4_live.db"
@@ -90,17 +96,12 @@ def run_live_pipeline(
     json_path = output_dir / "detections.json"
     csv_path = output_dir / "detections.csv"
 
-    source = Esp32MjpegSource(
-        stream_url,
-        source_name=str(config["source_name"]),
-        capture_factory=capture_factory,
-    )
     processor = BaselineVisionProcessor(
         threshold=int(config["threshold"]),
         min_area_px=float(config["min_area_px"]),
         algorithm_version="week4-live-roi-baseline-1",
         roi_px=roi_px,
-        data_mode=EVIDENCE_LEVEL,
+        data_mode=evidence_level,
     )
     batch_id = str(config["batch_id"])
     frames_received = 0
@@ -108,15 +109,16 @@ def run_live_pipeline(
     recovery_frames_skipped = 0
     states_seen: list[str] = []
     first_shape: tuple[int, int] | None = None
+    representative_frame_id: int | None = None
     started = time.perf_counter()
 
     with SQLiteInspectionRepository(pending_database_path) as repository:
-        repository.start_batch(batch_id, source.source_name, EVIDENCE_LEVEL)
+        repository.start_batch(batch_id, source.source_name, evidence_level)
         source.connect()
         repository.append_event(
             source.source_name,
             "CAMERA_CONNECT_REQUESTED",
-            {"state": source.state.value, "evidence_level": EVIDENCE_LEVEL},
+            {"state": source.state.value, "evidence_level": evidence_level},
         )
         previous_state = source.state
         try:
@@ -140,7 +142,9 @@ def run_live_pipeline(
                     recovery_frames_skipped += 1
                     continue
 
-                if not pending_raw_path.exists() and not cv2.imwrite(str(pending_raw_path), packet.image):
+                # These two files are a representative pair from the same frame.
+                # Earlier records retain null image_path because their images are not archived.
+                if not cv2.imwrite(str(pending_raw_path), packet.image):
                     raise OSError(f"could not write raw frame: {pending_raw_path}")
                 annotated, records = processor.process(packet, batch_id)
                 roi_x, roi_y, roi_width, roi_height = roi_px
@@ -152,12 +156,11 @@ def run_live_pipeline(
                     2,
                 )
                 for record in records:
-                    repository.append_detection(
-                        replace(record, image_path=str(annotated_path.resolve()))
-                    )
+                    repository.append_detection(record)
                 if not cv2.imwrite(str(pending_annotated_path), annotated):
                     raise OSError(f"could not write annotated frame: {pending_annotated_path}")
                 frames_processed += 1
+                representative_frame_id = packet.frame_id
         finally:
             source.disconnect()
             repository.append_event(
@@ -180,7 +183,7 @@ def run_live_pipeline(
     _write_csv(csv_path, detections)
     summary = {
         "status": "PASS",
-        "evidence_level": EVIDENCE_LEVEL,
+        "evidence_level": evidence_level,
         "camera_path": "PLAN_B_ESP32S3_OV3660_MJPEG",
         "camera_source": source.source_name,
         "batch_id": batch_id,
@@ -196,16 +199,17 @@ def run_live_pipeline(
         "states_seen": states_seen,
         "recovery_frames_required": source.monitor.policy.recovery_frames,
         "candidate_records": len(detections),
-        "hardware_stream_verified": True,
+        "hardware_stream_verified": hardware_source,
         "rpla_defect_performance_verified": False,
         "physical_measurements_available": False,
         "raw_frame_path": str(raw_path.resolve()),
         "annotated_frame_path": str(annotated_path.resolve()),
+        "representative_frame_id": representative_frame_id,
         "database_path": str(database_path.resolve()),
         "json_path": str(json_path.resolve()),
         "csv_path": str(csv_path.resolve()),
         "interpretation": (
-            "Candidate regions only verify the live image-processing and persistence path; "
+            "Candidate regions exercise the image-processing and persistence path; "
             "they are not validated rPLA defects."
         ),
     }
@@ -227,7 +231,7 @@ def rebuild_live_database(output_dir: Path) -> Path:
     if pending_path.exists():
         pending_path.unlink()
     with SQLiteInspectionRepository(pending_path) as repository:
-        repository.start_batch(batch_id, str(summary["camera_source"]), EVIDENCE_LEVEL)
+        repository.start_batch(batch_id, str(summary["camera_source"]), str(summary["evidence_level"]))
         repository.append_event(
             str(summary["camera_source"]),
             "EVIDENCE_DATABASE_REBUILT",

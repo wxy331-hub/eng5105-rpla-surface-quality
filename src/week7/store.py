@@ -10,8 +10,8 @@ attempt directory, but can never make that attempt satisfy sample completeness.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 import csv
 import io
 import json
@@ -108,22 +108,38 @@ class SampleStore:
     of the live inspection database and never opens or migrates it.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, evidence_label: str = EVIDENCE_LABEL,
+                 database_name: str = "week7_samples.sqlite3") -> None:
+        if evidence_label not in {EVIDENCE_LABEL, "LIVE_INTEGRATION_ONLY", "OFFLINE_FAULT_INJECTION_ONLY"}:
+            raise ValueError("Unsupported sample archive evidence label")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.sqlite3", database_name):
+            raise ValueError("database_name must be a simple sqlite3 filename")
+        self.evidence_label = evidence_label
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "week7_samples.sqlite3"
+        self.path = self.root / database_name
         with self._connection() as connection:
+            for table in ("captures", "sample_events"):
+                existing = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone()
+                if existing is not None and f"evidence_label = '{evidence_label}'" not in existing[0]:
+                    raise ValueError("Archive evidence differs; use a separate database without migration")
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.executescript(SCHEMA)
+            connection.executescript(SCHEMA.replace(EVIDENCE_LABEL, evidence_label))
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self, commit_guard: Callable[[], AbstractContextManager] | None = None) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
-            connection.commit()
+            if commit_guard is None:
+                connection.commit()
+            else:
+                with commit_guard():
+                    connection.commit()
         except BaseException:
             connection.rollback()
             raise
@@ -370,7 +386,7 @@ class SampleStore:
             "occurred_at_utc": utc_now_iso(),
             "event_type": event_type,
             "details": json.loads(details_json),
-            "evidence_label": EVIDENCE_LABEL,
+            "evidence_label": self.evidence_label,
         }
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -378,7 +394,7 @@ class SampleStore:
             connection.execute(
                 "INSERT INTO sample_events VALUES (?, ?, ?, ?, ?, ?)",
                 (event["event_id"], session_id, event["occurred_at_utc"], event_type,
-                 details_json, EVIDENCE_LABEL),
+                 details_json, self.evidence_label),
             )
         return event
 
@@ -397,7 +413,7 @@ class SampleStore:
             raise ValueError("Archive path escapes the store root")
         return path
 
-    def _capture(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _capture(self, row: sqlite3.Row, analysis: dict[str, Any] | None = None) -> dict[str, Any]:
         result = dict(row)
         for field in ("candidates", "lighting_metadata", "calibration"):
             result[field] = json.loads(result.pop(f"{field}_json"))
@@ -407,6 +423,8 @@ class SampleStore:
             for field in ("raw_image_path", "annotated_image_path")
         )
         result["candidate_count"] = len(result["candidates"])
+        result["analysis"] = analysis
+        result["analysis_status"] = "legacy_unassessed" if analysis is None else analysis["geometry_status"]
         result["physical_outputs_allowed"] = False
         result["size_mm"] = None
         result["position_mm"] = None
@@ -422,8 +440,10 @@ class SampleStore:
             event = dict(event_row)
             event["details"] = json.loads(event.pop("details_json"))
             result["events"].append(event)
+        analyses = {event["details"]["capture_id"]: event["details"] for event in result["events"]
+                    if event["event_type"] == "CAPTURE_ANALYSIS"}
         result["captures"] = [
-            self._capture(capture)
+            self._capture(capture, analyses.get(capture["capture_id"]))
             for capture in connection.execute(
                 "SELECT * FROM captures WHERE session_id = ? ORDER BY rowid",
                 (row["session_id"],),
@@ -443,7 +463,7 @@ class SampleStore:
         result["status"] = (
             "incomplete_archive" if result["missing_views"] else "completed"
         ) if row["completed_at_utc"] else "in_progress"
-        result["evidence_label"] = EVIDENCE_LABEL
+        result["evidence_label"] = self.evidence_label
         result["physical_outputs_allowed"] = False
         result["size_mm"] = None
         result["position_mm"] = None
@@ -490,13 +510,22 @@ class SampleStore:
         lighting_metadata: Mapping[str, Any],
         calibration: Mapping[str, Any] | None = None,
         retake: bool = False,
+        commit_guard: Callable[[], AbstractContextManager] | None = None,
+        request_id: str | None = None,
+        analysis: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Save one attempt, keeping both images even when no candidates exist.
 
         ``retake=True`` must target an existing view. The previous attempt stays
-        archived and is linked by ``supersedes_capture_id``. Synthetic captures
-        never accept physical measurement values, including when a proposed
-        calibration identifier is supplied as metadata.
+        archived and is linked by ``supersedes_capture_id``. These uncalibrated
+        archives never accept physical measurement values, including when a
+        proposed calibration identifier is supplied as metadata. ``commit_guard``
+        can recheck a live connection after writes and guard the final commit.
+        Supplying ``request_id`` records CAPTURE_ARCHIVED in the same transaction,
+        so a failed success-event write also rolls back the new attempt and files.
+        ``analysis`` (a ``ViewInspectionResult.to_dict``) is stored as a
+        CAPTURE_ANALYSIS event in that transaction too; captures without one
+        read back as ``legacy_unassessed``.
         """
         if isinstance(angle_deg, bool) or not isinstance(angle_deg, int) or angle_deg not in ANGLES:
             raise ValueError(f"angle_deg must be one of {ANGLES}")
@@ -504,6 +533,8 @@ class SampleStore:
             raise ValueError(f"lighting_mode must be one of {LIGHTING_MODES}")
         if not isinstance(retake, bool):
             raise ValueError("retake must be boolean")
+        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
+            raise ValueError("request_id must be null or a non-empty string")
         original_png = self._encode_png(packet.image)
         annotated_png = self._encode_png(annotated)
         if annotated.shape[:2] != packet.image.shape[:2]:
@@ -512,8 +543,8 @@ class SampleStore:
         for candidate in candidates:
             data = candidate.to_dict() if isinstance(candidate, DetectionRecord) else dict(candidate)
             if data.get("size_mm") is not None or data.get("position_mm") is not None:
-                raise ValueError("Offline synthetic captures cannot store physical measurements")
-            data.update(size_mm=None, position_mm=None, evidence_label=EVIDENCE_LABEL,
+                raise ValueError("Uncalibrated sample captures cannot store physical measurements")
+            data.update(size_mm=None, position_mm=None, evidence_label=self.evidence_label,
                         physical_outputs_allowed=False)
             candidate_data.append(data)
         calibration_data = dict(calibration or {})
@@ -529,13 +560,16 @@ class SampleStore:
         candidates_json = _json(candidate_data)
         lighting_json = _json(dict(lighting_metadata))
         calibration_json = _json(calibration_data)
+        if analysis is not None and not isinstance(analysis.get("geometry_status"), str):
+            raise ValueError("analysis must include a geometry_status")
         capture_id = uuid4().hex
+        analysis_json = None if analysis is None else _json({**analysis, "capture_id": capture_id})
         attempt_dir: Path | None = None
         staging_dir: Path | None = None
         staging_created = False
         attempt_created = False
         try:
-            with self._connection() as connection:
+            with self._connection(commit_guard=commit_guard) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 sample = self._require_sample(connection, session_id)
                 if sample["completed_at_utc"] is not None:
@@ -582,11 +616,25 @@ class SampleStore:
                      int(packet.image.shape[1]), int(packet.image.shape[0]), str(packet.image.dtype),
                      (relative / "raw.png").as_posix(), (relative / "annotated.png").as_posix(),
                      candidates_json, lighting_json, calibration_json, calibration_id,
-                     calibration_status, EVIDENCE_LABEL, previous["capture_id"] if previous else None),
+                     calibration_status, self.evidence_label, previous["capture_id"] if previous else None),
                 )
+                if request_id is not None:
+                    connection.execute(
+                        "INSERT INTO sample_events VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid4().hex, session_id, utc_now_iso(), "CAPTURE_ARCHIVED",
+                         _json({"capture_id": capture_id, "request_id": request_id,
+                                "angle_deg": angle_deg, "lighting_mode": lighting_mode}),
+                         self.evidence_label),
+                    )
+                if analysis_json is not None:
+                    connection.execute(
+                        "INSERT INTO sample_events VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid4().hex, session_id, utc_now_iso(), "CAPTURE_ANALYSIS",
+                         analysis_json, self.evidence_label),
+                    )
                 saved = self._capture(connection.execute(
                     "SELECT * FROM captures WHERE capture_id = ?", (capture_id,)
-                ).fetchone())
+                ).fetchone(), None if analysis_json is None else json.loads(analysis_json))
         except BaseException:
             for directory, created in ((staging_dir, staging_created), (attempt_dir, attempt_created)):
                 if directory is not None and created:
@@ -636,6 +684,7 @@ class SampleStore:
             "candidates_json", "lighting_metadata_json", "calibration_json",
             "calibration_id", "calibration_status", "evidence_label",
             "physical_outputs_allowed", "size_mm", "position_mm",
+            "analysis_status", "analysis_reason_codes", "analysis_algorithm_version",
         ]
         output = io.StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=fields)
@@ -646,5 +695,8 @@ class SampleStore:
                        sample_status=sample["status"], completed_views=sample["completed_views"])
             for key in ("candidates", "lighting_metadata", "calibration"):
                 row[f"{key}_json"] = _json(capture[key])
+            analysis = capture["analysis"] or {}
+            row.update(analysis_reason_codes=" ".join(analysis.get("reason_codes", [])),
+                       analysis_algorithm_version=analysis.get("algorithm_version"))
             writer.writerow({key: _csv_cell(value) for key, value in row.items()})
         return output.getvalue()

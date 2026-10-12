@@ -1,7 +1,7 @@
 """Triggered, hardware-free sample workflow built on the shared frame contract.
 
 A branch requests lighting, accepts a correlated READY, obtains a new frame,
-archives it, then requests and acknowledges OFF. Preview frames never enter here.
+acknowledges OFF, then commits the archive. Preview frames never enter here.
 """
 
 from __future__ import annotations
@@ -188,7 +188,7 @@ class SampleWorkflow:
     def capture_view(
         self, session_id: str, angle_deg: int, lighting_mode: str, *, retake: bool = False,
     ) -> dict[str, Any]:
-        """Capture one selected angle and lighting view, then acknowledge OFF.
+        """Capture one selected view, acknowledge OFF, then commit its archive.
 
         The other lighting view remains unchanged. A repeat needs explicit
         ``retake=True`` and preserves the original image attempt and its record.
@@ -222,6 +222,8 @@ class SampleWorkflow:
             )
             self._last_fault = None
             request_id = uuid4().hex
+            off_acknowledged = False
+            capture_error: Exception | None = None
             try:
                 command = controller.begin(lighting_mode, request_id, angle_deg=angle_deg)
                 self.store.append_event(session_id, "LIGHTING_REQUEST", command)
@@ -246,29 +248,41 @@ class SampleWorkflow:
                 self._last_frame_id = packet.frame_id
                 _, records = self.processor.process(packet, session_id)
                 annotated = annotate_synthetic_candidates(packet.image, records)
-                capture = self.store.save_capture(
+                # Complete and record OFF before committing a successful attempt.
+                # No final event write can turn a committed capture into a failure.
+                off = controller.finish()
+                controller.receive(controller.make_status())
+                off_acknowledged = True
+                self.store.append_event(session_id, "SIMULATED_OFF_ACK", off)
+                self.store.save_capture(
                     session_id, angle_deg, lighting_mode, packet, annotated,
                     [record.to_dict() for record in records],
                     lighting_metadata={**lighting, "request_id": request_id,
                                        "captured_monotonic": captured_at,
                                        "mode": lighting_mode, "simulated": True},
-                    calibration=self.calibration_check(), retake=retake,
+                    calibration=self.calibration_check(), retake=retake, request_id=request_id,
                 )
-                self.store.append_event(session_id, "CAPTURE_ARCHIVED", {
-                    "capture_id": capture["capture_id"], "request_id": request_id,
-                    "angle_deg": angle_deg, "lighting_mode": lighting_mode,
-                })
             except Exception as exc:
+                capture_error = exc
                 self._last_fault = str(exc)
-                self.store.append_event(session_id, "CAPTURE_FAILED", {
-                    "request_id": request_id, "angle_deg": angle_deg,
-                    "lighting_mode": lighting_mode, "reason": str(exc),
-                })
+                try:
+                    self.store.append_event(session_id, "CAPTURE_FAILED", {
+                        "request_id": request_id, "angle_deg": angle_deg,
+                        "lighting_mode": lighting_mode, "reason": str(exc),
+                    })
+                except Exception as event_error:
+                    exc.add_note(f"Could not record CAPTURE_FAILED: {event_error}")
                 raise
             finally:
                 # The simulated peer always acknowledges OFF, even after a
                 # malformed READY. A real transport must prove that separately.
-                off = controller.finish()
-                controller.receive(controller.make_status())
-                self.store.append_event(session_id, "SIMULATED_OFF_ACK", off)
+                if not off_acknowledged:
+                    try:
+                        off = controller.finish()
+                        controller.receive(controller.make_status())
+                        self.store.append_event(session_id, "SIMULATED_OFF_ACK", off)
+                    except Exception as off_error:
+                        if capture_error is None:
+                            raise
+                        capture_error.add_note(f"Could not confirm or record SIMULATED_OFF_ACK: {off_error}")
             return self.describe_sample(self.store.get_sample(session_id))

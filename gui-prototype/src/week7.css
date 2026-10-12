@@ -37,7 +37,7 @@
 .week7-session-row { display: flex; align-items: start; gap: 3px; min-width: 0; }
 .week7-session-row > .week7-session { flex: 1; min-width: 0; }
 .week7-delete-session { flex: none; display: grid; place-items: center; width: 30px; height: 34px; margin-top: 8px; border: 1px solid var(--rule); border-radius: 3px; color: var(--oat); background: transparent; cursor: pointer; }
-.week7-delete-session:hover { color: var(--rust); border-color: var(--rust); }
+.week7-delete-session:hover { color: var(--rust-text); border-color: var(--rust); }
 .week7-session { text-align: left; display: grid; gap: 6px; width: 100%; border: 1px solid transparent; background: transparent; padding: 12px 9px; cursor: pointer; border-radius: 3px; }
 .week7-session strong { font-size: 13px; overflow-wrap: anywhere; }
 .week7-session span { font-size: 11px; color: var(--oat); }
@@ -51,6 +51,10 @@
 .week7-source-status strong { font-size: 13px; font-weight: 600; }
 .week7-source-status span { grid-column: 1 / -1; font-size: 11px; color: var(--oat); }
 .week7-source-status .button { font-size: 11px; }
+.week7-source-status > .week7-source-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.week7-preview { overflow: hidden; }
+.week7-preview > .week7-image { max-height: none; }
+.week7-preview-note { padding: 12px 18px; margin: 0; font-size: 11px; color: var(--oat); line-height: 1.7; }
 .week7-action-notice { margin: 0; padding: 13px 16px; border: 1px solid var(--rule); color: var(--bone); font-size: 12px; }
 .week7-cleanup-pending, .week7-capture-success { padding: 15px 18px; border: 1px solid var(--amber-deep); display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; font-size: 12px; line-height: 1.6; }
 .week7-cleanup-pending { color: var(--amber); }
@@ -133,6 +137,19 @@
 .week7-candidate-list dl > div { padding: 5px 0; }
 .week7-candidate-list dd { font-family: var(--mono); font-size: 11px; }
 .week7-no-candidates { padding: 12px 18px; }
+.week7-analysis { display: grid; gap: 6px; margin: 0 18px 12px; padding: 10px 12px; border-left: 2px solid var(--oat); font-size: 11px; line-height: 1.6; color: var(--oat); }
+.week7-analysis.is-valid { border-left-color: var(--bone); }
+.week7-analysis.is-rejected { border-left-color: var(--amber); }
+.week7-analysis strong { font-weight: 500; color: inherit; }
+.week7-analysis.is-rejected strong { color: var(--amber); }
+.week7-analysis ul { margin: 0; padding-left: 16px; }
+.week7-analysis code { font-size: 10px; word-break: break-word; }
+.week7-surface { display: grid; gap: 2px; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--rule); }
+.week7-surface strong { color: var(--bone); font-weight: 500; }
+.week7-surface small { color: var(--oat-dim); font-size: 10px; }
+.week7-inspection-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0 18px 16px; font-size: 11px; line-height: 1.6; color: var(--oat); }
+.week7-inspection-summary strong { font-weight: 500; }
+.week7-inspection-summary.is-candidates_present strong, .week7-inspection-summary.is-geometry_coverage_incomplete strong { color: var(--amber); }
 .week7-history { padding: 18px; }
 .week7-history summary { cursor: pointer; font-size: 13px; }
 .week7-history summary span { float: right; color: var(--oat); font-size: 11px; }
@@ -161,7 +178,8 @@
 .week7-event-log summary { cursor: pointer; font-size: 11px; }
 .week7-event-log summary > time { float: right; }
 .week7-event-log pre { font-family: var(--mono); font-size: 10px; line-height: 1.7; color: var(--oat); white-space: pre-wrap; overflow-wrap: anywhere; }
-.week7-camera-dialog { max-width: min(520px, calc(100vw - 40px)); padding: 26px; background: var(--ink); color: var(--bone); border: 1px solid var(--rule); border-radius: 5px; }
+.week7-camera-dialog { width: min(520px, calc(100vw - 40px)); max-width: none; padding: 0; background: transparent; color: var(--bone); border: 1px solid rgba(233, 229, 217, .06); border-radius: 2px; }
+.week7-camera-dialog .glass > div { padding: 26px; }
 .week7-camera-dialog::backdrop { background: rgb(0 0 0 / 70%); }
 .week7-camera-dialog h2 { font-size: 20px; margin: 0 0 18px; }
 .week7-camera-dialog p { font-size: 13px; color: var(--oat); line-height: 1.8; }

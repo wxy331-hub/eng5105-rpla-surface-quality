@@ -8,7 +8,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          charts: ["recharts"],
           icons: ["@phosphor-icons/react"],
         },
       },

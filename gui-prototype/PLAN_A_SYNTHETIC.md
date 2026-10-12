@@ -1,6 +1,6 @@
 # Plan A native UHD synthetic data
 
-The default inspection replay and new offline sample sessions generate images
+The explicitly selected inspection replay and new offline sample sessions generate images
 directly on a **3840 × 2160 px** canvas. This is synthetic software evidence;
 the camera's requested **3840 × 2160 / MJPG / 30 FPS** mode still awaits hardware
 validation. Actual image dimensions and the requested camera mode remain separate

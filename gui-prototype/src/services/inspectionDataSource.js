@@ -6,31 +6,6 @@ import {
 } from "../data/offlineEvidence.js";
 import { createResolutionMetadata } from "./resolutionMetadata.js";
 
-export class CameraSource {
-  async connect() { throw new Error("CameraSource.connect() is not implemented"); }
-  async disconnect() { throw new Error("CameraSource.disconnect() is not implemented"); }
-  subscribeFrames() { throw new Error("CameraSource.subscribeFrames() is not implemented"); }
-  async readStatus() { throw new Error("CameraSource.readStatus() is not implemented"); }
-}
-
-export class TelemetrySource {
-  async connect() { throw new Error("TelemetrySource.connect() is not implemented"); }
-  subscribeTelemetry() { throw new Error("TelemetrySource.subscribeTelemetry() is not implemented"); }
-  async readHealth() { throw new Error("TelemetrySource.readHealth() is not implemented"); }
-}
-
-export class DefectRepository {
-  async append() { throw new Error("DefectRepository.append() is not implemented"); }
-  async list() { throw new Error("DefectRepository.list() is not implemented"); }
-  async exportCsv() { throw new Error("DefectRepository.exportCsv() is not implemented"); }
-}
-
-export class AlarmController {
-  async raise() { throw new Error("AlarmController.raise() is not implemented"); }
-  async acknowledge() { throw new Error("AlarmController.acknowledge() is not implemented"); }
-  async holdOutputs() { throw new Error("AlarmController.holdOutputs() is not implemented"); }
-}
-
 /**
  * Integration boundary for the Week 4/8/9 system work.
  * The GUI consumes this contract and does not know whether data comes from
@@ -175,33 +150,55 @@ export function toGuiDetection(item, imageUrl) {
   };
 }
 
-function bboxIoU(left, right) {
+// Intersection over union split one static mark into new events whenever its
+// thresholded box grew or shrank between frames (area changed up to about 2.5x on
+// the 2026-10-12 bench). A box still continues an event if it covers at least
+// half of the smaller box and the areas differ by at most MAX_AREA_RATIO; the
+// ratio keeps a separate defect nested inside a larger one apart (Codex review
+// 2026-10-12). Among matches, the highest IoU wins so identities do not swap.
+const MAX_AREA_RATIO = 4;
+
+function bboxMatch(left, right) {
   const [leftX, leftY, leftWidth, leftHeight] = left;
   const [rightX, rightY, rightWidth, rightHeight] = right;
   const overlapWidth = Math.max(0, Math.min(leftX + leftWidth, rightX + rightWidth) - Math.max(leftX, rightX));
   const overlapHeight = Math.max(0, Math.min(leftY + leftHeight, rightY + rightHeight) - Math.max(leftY, rightY));
   const intersection = overlapWidth * overlapHeight;
-  const union = leftWidth * leftHeight + rightWidth * rightHeight - intersection;
-  return union > 0 ? intersection / union : 0;
+  const leftArea = leftWidth * leftHeight;
+  const rightArea = rightWidth * rightHeight;
+  const smaller = Math.min(leftArea, rightArea);
+  const larger = Math.max(leftArea, rightArea);
+  if (smaller <= 0 || larger > MAX_AREA_RATIO * smaller) return { overlap: 0, iou: 0 };
+  return { overlap: intersection / smaller, iou: intersection / (leftArea + rightArea - intersection) };
 }
 
-export function collapseCandidateEpisodes(detections, { maxFrameGap = 1, minIou = 0.5 } = {}) {
+// Every processed live frame records its candidates. On the 2026-10-12 bench one
+// marker dot (about 1.3 frames/s, a few frames not judged in between) gave 631
+// records and 52 displayed events under a one-frame gap and IoU >= 0.5; a gap of
+// up to five frames (about 4 s) and the overlap of the smaller box gave 18, most
+// of the rest from moving the specimen.
+export function collapseCandidateEpisodes(detections, { maxFrameGap = 5, minOverlap = 0.5 } = {}) {
   const sorted = [...detections].sort((left, right) => left.frameId - right.frameId);
   const episodes = [];
 
   for (const detection of sorted) {
-    const previous = episodes.at(-1);
-    const continuesPrevious = previous
-      && previous.batchId === detection.batchId
-      && previous.type === detection.type
-      && detection.frameId - previous.frameEnd <= maxFrameGap
-      && bboxIoU(previous.bboxPx, detection.bboxPx) >= minIou;
+    let previous = null;
+    let bestIou = -1;
+    // ponytail: scan the bounded snapshot; index active events if history grows.
+    for (const episode of episodes) {
+      const gap = detection.frameId - episode.frameEnd;
+      if (episode.batchId !== detection.batchId || episode.type !== detection.type
+        || gap <= 0 || gap > maxFrameGap) continue;
+      const { overlap, iou } = bboxMatch(episode.lastBboxPx, detection.bboxPx);
+      if (overlap >= minOverlap && iou > bestIou) { previous = episode; bestIou = iou; }
+    }
 
-    if (!continuesPrevious) {
+    if (!previous) {
       episodes.push({
         ...detection,
         frameStart: detection.frameId,
         frameEnd: detection.frameId,
+        lastBboxPx: detection.bboxPx,
         occurrences: 1,
         recordIds: [detection.id],
       });
@@ -209,16 +206,17 @@ export function collapseCandidateEpisodes(detections, { maxFrameGap = 1, minIou 
     }
 
     previous.frameEnd = detection.frameId;
+    previous.lastBboxPx = detection.bboxPx;
     previous.occurrences += 1;
     previous.recordIds.push(detection.id);
+    // Keep the peak record's identity, image and measurements together. Matching
+    // follows the latest box independently of the representative's older frame.
     if (detection.algorithmScore >= previous.algorithmScore) {
-      previous.algorithmScore = detection.algorithmScore;
-      previous.areaPx = detection.areaPx;
-      previous.bboxPx = detection.bboxPx;
+      Object.assign(previous, detection);
     }
   }
 
-  return episodes.map((episode) => ({
+  return episodes.map(({ lastBboxPx, ...episode }) => ({
     ...episode,
     frameLabel: episode.frameStart === episode.frameEnd
       ? String(episode.frameStart)
@@ -281,9 +279,15 @@ function currentFrameTelemetryLatency(summary, nowMs) {
 
 export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl, { serviceFrame = false, nowMs = Date.now() } = {}) {
   const defects = rawDetections.map((item) => toGuiDetection(item, imageUrl));
-  const currentDetection = defects.at(-1) ?? null;
-  const cameraState = summary.camera_state ?? "HEALTHY";
+  const cameraState = summary.camera_state ?? (serviceFrame ? "DISCONNECTED" : "HEALTHY");
   const frameNumber = summary.current_frame_id ?? Math.max(0, summary.frames_received - 1);
+  const currentFrameAvailable = !serviceFrame || (cameraState === "HEALTHY"
+    && Number.isInteger(summary.current_frame_id) && summary.frame_width_px > 0 && summary.frame_height_px > 0
+    && Number.isFinite(summary.frame_age_ms) && Number.isFinite(summary.stale_after_ms)
+    && summary.frame_age_ms >= 0 && summary.stale_after_ms > 0 && summary.frame_age_ms <= summary.stale_after_ms);
+  const currentDetection = serviceFrame
+    ? currentFrameAvailable ? defects.findLast((item) => item.frameId === summary.current_frame_id) ?? null : null
+    : defects.at(-1) ?? null;
   // Loading a saved snapshot must never turn its age into a latency reading.
   const postDecodeToGuiLatencyMs = serviceFrame ? currentFrameTelemetryLatency(summary, nowMs) : null;
   return {
@@ -301,7 +305,8 @@ export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl, { s
     framesizeName: summary.framesize_name,
     roiPx: summary.roi_px,
     cameraState,
-    automaticActionsAllowed: summary.automatic_actions_allowed ?? cameraState === "HEALTHY",
+    automaticActionsAllowed: serviceFrame ? currentFrameAvailable && summary.automatic_actions_allowed === true
+      : summary.automatic_actions_allowed ?? cameraState === "HEALTHY",
     recoveryCount: cameraState === "HEALTHY" ? summary.recovery_frames_required : 0,
     recoveryFrames: summary.recovery_frames_required,
     framesGenerated: summary.frames_received,
@@ -316,13 +321,17 @@ export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl, { s
     frameNumber,
     lastFrameAgeS: 0,
     currentDetection,
-    imageUrl,
+    imageUrl: currentFrameAvailable ? imageUrl : null,
+    currentFrameAvailable,
+    serviceAvailable: serviceFrame,
+    loadError: summary.last_error ?? null,
     imageFrameNumber: frameNumber,
     measuredFps: summary.measured_pipeline_fps,
     processingLatencyMs: summary.processing_latency_ms ?? null,
     postDecodeToGuiLatencyMs,
     inspectionFrames: summary.inspection_frames ?? summary.frames_processed_when_healthy,
     targetPresent: summary.target_present ?? true,
+    viewInspection: summary.view_inspection ?? null,
     evidenceLevel: summary.evidence_level,
     hardwarePerformanceVerified: summary.hardware_stream_verified,
     rplaDefectPerformanceVerified: summary.rpla_defect_performance_verified,
@@ -345,6 +354,13 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
   #retryTimer = null;
   #closed = false;
   #defects = [];
+  #epoch = 0;
+  #watchdog = null;
+  #lastPayloadAt = 0;
+  #fetch;
+  #socketFactory;
+  #apiUrl;
+  #wsUrl;
   #snapshot = {
     mode: "LIVE DETECTION",
     ...createCameraSourceMetadata(),
@@ -363,8 +379,9 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
     currentStep: { event: "CONNECT_REQUESTED", state: "CONNECTING" },
     frameNumber: 0,
     currentDetection: null,
-    imageUrl: `${serviceApiUrl}/api/frame.jpg`,
-    streamUrl: `${serviceApiUrl}/api/stream.mjpg`,
+    imageUrl: null,
+    streamUrl: null,
+    currentFrameAvailable: false,
     imageFrameNumber: 0,
     measuredFps: 0,
     processingLatencyMs: null,
@@ -375,16 +392,36 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
     defects: [],
   };
 
+  constructor({ baseUrl = serviceApiUrl, wsUrl, fetchImpl = globalThis.fetch.bind(globalThis),
+    socketFactory = (url) => new WebSocket(url) } = {}) {
+    super();
+    this.#apiUrl = baseUrl.replace(/\/+$/, "");
+    this.#wsUrl = wsUrl ?? (baseUrl === serviceApiUrl ? serviceWsUrl : `${this.#apiUrl.replace(/^http/, "ws")}/ws`);
+    this.#fetch = fetchImpl;
+    this.#socketFactory = socketFactory;
+  }
+
   async connect() {
     this.#closed = false;
-    await this.#loadOnce();
+    const epoch = ++this.#epoch;
+    await this.#loadOnce(epoch);
+    if (this.#closed || epoch !== this.#epoch) return this.getSnapshot();
     this.#openSocket();
+    if (!this.#watchdog) this.#watchdog = globalThis.setInterval(() => {
+      if (this.#lastPayloadAt && Date.now() - this.#lastPayloadAt > 5000) {
+        this.#unavailable("RECONNECTING", "Inspection service telemetry timed out");
+        this.#socket?.close();
+      }
+    }, 1000);
     return this.getSnapshot();
   }
 
   async disconnect() {
     this.#closed = true;
-    if (this.#retryTimer) window.clearTimeout(this.#retryTimer);
+    this.#epoch += 1;
+    if (this.#watchdog) globalThis.clearInterval(this.#watchdog);
+    this.#watchdog = null;
+    if (this.#retryTimer) globalThis.clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.#socket?.close();
     this.#socket = null;
@@ -409,7 +446,7 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
   }
 
   async deleteDefects(recordIds) {
-    const response = await fetch(`${serviceApiUrl}/api/events/delete`, {
+    const response = await this.#fetch(`${this.#apiUrl}/api/events/delete`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ record_ids: recordIds }),
@@ -420,8 +457,14 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
     return payload.deleted;
   }
 
-  replayScenario() {
-    fetch(`${serviceApiUrl}/api/control/reconnect`, { method: "POST" }).catch(() => {});
+  async replayScenario() {
+    try {
+      const response = await this.#fetch(`${this.#apiUrl}/api/control/reconnect`, { method: "POST" });
+      if (!response.ok) throw new Error(`Camera reconnect failed (HTTP ${response.status})`);
+      this.#unavailable("RECONNECTING");
+      await this.#loadOnce(this.#epoch);
+      this.#openSocket();
+    } catch (error) { this.#unavailable("DISCONNECTED", error.message); }
   }
 
   #emit() {
@@ -429,50 +472,58 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
   }
 
   #applyPayload(payload) {
+    if (!payload?.summary || !Array.isArray(payload.detections)) throw new Error("Invalid inspection service snapshot");
+    this.#lastPayloadAt = Date.now();
+    const live = createLiveEvidenceSnapshot(payload.summary, payload.detections,
+      `${this.#apiUrl}/api/frame.jpg?t=${payload.summary.current_frame_id ?? "waiting"}`, { serviceFrame: true });
     this.#snapshot = {
-      ...createLiveEvidenceSnapshot(payload.summary, payload.detections, `${serviceApiUrl}/api/frame.jpg`, { serviceFrame: true }),
+      ...live,
       mode: "LIVE DETECTION",
-      streamUrl: `${serviceApiUrl}/api/stream.mjpg`,
+      streamUrl: live.currentFrameAvailable ? `${this.#apiUrl}/api/stream.mjpg` : null,
     };
     this.#defects = this.#snapshot.defects;
     this.#emit();
   }
 
-  async #loadOnce() {
+  #unavailable(state, message) {
+    this.#snapshot = {
+      ...this.#snapshot, cameraState: state, automaticActionsAllowed: false, serviceAvailable: false,
+      currentFrameAvailable: false, currentDetection: null, imageUrl: null, streamUrl: null,
+      viewInspection: null, processingLatencyMs: null, postDecodeToGuiLatencyMs: null, measuredFps: null,
+      currentStep: { event: state === "RECONNECTING" ? "LIVE_SERVICE_RECONNECTING" : "LIVE_SERVICE_UNAVAILABLE", state },
+      loadError: message ?? null,
+    };
+    this.#emit();
+  }
+
+  async #loadOnce(epoch = this.#epoch) {
     try {
-      const response = await fetch(`${serviceApiUrl}/api/snapshot`, { cache: "no-store" });
+      const response = await this.#fetch(`${this.#apiUrl}/api/snapshot`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error("Inspection service is unavailable");
-      this.#applyPayload(await response.json());
+      const payload = await response.json();
+      if (!this.#closed && epoch === this.#epoch) this.#applyPayload(payload);
     } catch (error) {
-      this.#snapshot = {
-        ...this.#snapshot,
-        cameraState: "DISCONNECTED",
-        automaticActionsAllowed: false,
-        postDecodeToGuiLatencyMs: null,
-        currentStep: { event: "LIVE_SERVICE_UNAVAILABLE", state: "DISCONNECTED" },
-        loadError: error.message,
-      };
-      this.#emit();
+      if (!this.#closed && epoch === this.#epoch) this.#unavailable("DISCONNECTED", error.message);
     }
   }
 
   #openSocket() {
-    if (this.#closed || this.#socket?.readyState === WebSocket.OPEN || this.#socket?.readyState === WebSocket.CONNECTING) return;
-    const socket = new WebSocket(serviceWsUrl);
+    if (this.#closed || [0, 1].includes(this.#socket?.readyState)) return;
+    let socket;
+    try { socket = this.#socketFactory(this.#wsUrl); }
+    catch (error) { this.#unavailable("DISCONNECTED", error.message); return; }
     this.#socket = socket;
-    socket.onmessage = (event) => this.#applyPayload(JSON.parse(event.data));
+    socket.onmessage = (event) => {
+      if (this.#closed || this.#socket !== socket) return;
+      try { this.#applyPayload(JSON.parse(event.data)); }
+      catch (error) { this.#unavailable("DISCONNECTED", error.message); socket.close(); }
+    };
     socket.onclose = () => {
-      if (this.#socket === socket) this.#socket = null;
+      if (this.#socket !== socket) return;
+      this.#socket = null;
       if (this.#closed || this.#listeners.size === 0) return;
-      this.#snapshot = {
-        ...this.#snapshot,
-        cameraState: "RECONNECTING",
-        automaticActionsAllowed: false,
-        postDecodeToGuiLatencyMs: null,
-        currentStep: { event: "LIVE_SERVICE_RECONNECTING", state: "RECONNECTING" },
-      };
-      this.#emit();
-      this.#retryTimer = window.setTimeout(() => this.#openSocket(), 1000);
+      this.#unavailable("RECONNECTING");
+      this.#retryTimer = globalThis.setTimeout(() => { this.#loadOnce(); this.#openSocket(); }, 1000);
     };
   }
 }
@@ -567,8 +618,10 @@ export class LiveEvidenceInspectionDataSource extends InspectionDataSource {
   }
 }
 
-const requestedMode = import.meta.env?.VITE_INSPECTION_MODE;
-export const inspectionMode = requestedMode === "service" ? "service" : requestedMode === "live" ? "live" : "offline";
+export function resolveInspectionMode(requestedMode) {
+  return requestedMode === "live" ? "live" : ["offline", "week7"].includes(requestedMode) ? "offline" : "service";
+}
+export const inspectionMode = resolveInspectionMode(import.meta.env?.VITE_INSPECTION_MODE);
 export const inspectionDataSource = inspectionMode === "service"
   ? new ServiceInspectionDataSource()
   : inspectionMode === "live"

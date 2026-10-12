@@ -29,6 +29,7 @@ import {
 import { collapseCandidateEpisodes, inspectionDataSource, inspectionMode } from "./services/inspectionDataSource.js";
 import { I18nProvider, useI18n } from "./i18n.jsx";
 import Week7SamplePanel from "./Week7SamplePanel.jsx";
+import GlassSurface from "./GlassSurface.jsx";
 import { createResolutionMetadata } from "./services/resolutionMetadata.js";
 
 const navItems = [
@@ -63,12 +64,38 @@ function stateTone(state) {
   return "warning";
 }
 
+// The static inspector located the specimen but did not judge this frame
+// (for example out of focus), so neither "waiting for material" nor
+// "no candidates" describes it.
+function frameNotJudged(snapshot) {
+  return snapshot.cameraState === "HEALTHY" && snapshot.targetPresent && Boolean(snapshot.viewInspection)
+    && snapshot.viewInspection.geometry_status !== "valid";
+}
+
+// The outline could not verify focus (defocus, or a material whose edge
+// images softly): the system declines to judge and hands over to a person.
+function manualInspectionAdvised(snapshot) {
+  return frameNotJudged(snapshot) && (snapshot.viewInspection.reason_codes ?? []).includes("FOCUS_UNVERIFIABLE");
+}
+
+// The demo roughness grade of the current frame, as text that follows the
+// interface language (the banner on the image is English only).
+const DEMO_GRADE_TEXT = {
+  demo_good: "Surface roughness: good (demo thresholds, uncalibrated)",
+  demo_moderately_rough: "Surface roughness: moderately rough (demo thresholds, uncalibrated)",
+  demo_clearly_rough: "Surface roughness: clearly rough (demo thresholds, uncalibrated)",
+};
+
+function demoGradeText(snapshot) {
+  return DEMO_GRADE_TEXT[snapshot.viewInspection?.surface?.quality_label] ?? null;
+}
+
 function stateDetail(snapshot, key, t) {
   const values = {
     cameraState: { value: t(snapshot.cameraState), meta: t("Event: {event}", { event: t(snapshot.currentStep.event) }) },
     safetyGate: {
       value: t(isServiceMode
-        ? snapshot.automaticActionsAllowed ? "DETECTION ACTIVE" : snapshot.cameraState === "HEALTHY" ? "WAITING FOR MATERIAL" : "BLOCKED"
+        ? snapshot.automaticActionsAllowed ? "DETECTION ACTIVE" : frameNotJudged(snapshot) ? "FRAME NOT JUDGED" : snapshot.cameraState === "HEALTHY" ? "WAITING FOR MATERIAL" : "BLOCKED"
         : isLiveEvidence ? snapshot.cameraState : snapshot.automaticActionsAllowed ? "ENABLED" : "BLOCKED"),
       meta: t("Image processing only · no actuator output"),
     },
@@ -282,14 +309,14 @@ function LanguageSwitcher() {
         <CaretDown size={12} weight="bold" />
       </button>
       {open ? (
-        <div className="language-menu" role="menu" aria-label={t("Language")}>
+        <GlassSurface className="language-menu" role="menu" aria-label={t("Language")}>
           <button type="button" role="menuitemradio" aria-checked={language === "en"} onClick={() => selectLanguage("en")}>
             <span>English</span>{language === "en" ? <Check size={16} weight="bold" /> : null}
           </button>
           <button type="button" role="menuitemradio" aria-checked={language === "zh-CN"} onClick={() => selectLanguage("zh-CN")}>
             <span>中文</span>{language === "zh-CN" ? <Check size={16} weight="bold" /> : null}
           </button>
-        </div>
+        </GlassSurface>
       ) : null}
     </div>
   );
@@ -308,7 +335,7 @@ function TopBar({ snapshot }) {
         <span className="source-badge"><Camera size={17} weight="fill" /> {t(snapshot.source)}</span>
         <span className="demo-badge"><Info size={15} weight="bold" /> {t(snapshot.mode)}</span>
         <span className={`connection-state connection-state--${tone}`}><StatusDot tone={tone} /> {isLiveEvidence ? t(snapshot.cameraState) : t("Simulation: {state}", { state: t(snapshot.cameraState) })}</span>
-        <span className="batch-id">{t("Batch")} {snapshot.batchId}</span>
+        <span className="batch-id">{t("Batch")} {t(snapshot.batchId)}</span>
         <LanguageSwitcher />
       </div>
     </header>
@@ -346,12 +373,12 @@ function Sidebar({ activeView, setActiveView, snapshot }) {
         <a
           href="#sample-capture"
           className="nav-item"
-          aria-label={t("Offline sample capture")}
-          title={t("Offline sample capture")}
+          aria-label={t("Sample capture")}
+          title={t("Sample capture")}
           style={{ textDecoration: "none" }}
         >
           <Camera size={23} weight="duotone" />
-          <span>{t("Offline sample capture")}</span>
+          <span>{t("Sample capture")}</span>
         </a>
       </nav>
       <div className="sidebar__footer">
@@ -367,8 +394,31 @@ function Sidebar({ activeView, setActiveView, snapshot }) {
 
 function LiveCamera({ snapshot, selectedDetection, onReplay }) {
   const { t } = useI18n();
+  const cameraRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState("");
   const [streamRevision, setStreamRevision] = useState(0);
   const [streamFailed, setStreamFailed] = useState(false);
+  useEffect(() => {
+    const updateFullscreen = () => setIsFullscreen(document.fullscreenElement === cameraRef.current);
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    setFullscreenError("");
+    const camera = cameraRef.current;
+    if (!camera?.requestFullscreen || !document.exitFullscreen) {
+      setFullscreenError("Fullscreen view is unavailable in this browser.");
+      return;
+    }
+    try {
+      if (document.fullscreenElement === camera) await document.exitFullscreen();
+      else await camera.requestFullscreen();
+    } catch {
+      setFullscreenError("Could not change fullscreen view. Please try again.");
+    }
+  };
   // Size the stage to the frame the sensor actually delivers, so the picture
   // fills its box instead of being letterboxed inside a decorative widescreen
   // band. Read from the decoded image rather than a declared resolution string,
@@ -380,6 +430,12 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
   });
   const [decodedImage, setDecodedImage] = useState(null);
   const [failedImage, setFailedImage] = useState(null);
+  useEffect(() => {
+    if (isServiceMode && snapshot.currentFrameAvailable) {
+      setStreamFailed(false);
+      setStreamRevision((value) => value + 1);
+    }
+  }, [snapshot.currentFrameAvailable]);
   const blocked = !snapshot.automaticActionsAllowed;
   const tone = stateTone(snapshot.cameraState);
   const displayedEvidence = resolveDisplayedEvidence(snapshot, selectedDetection);
@@ -389,7 +445,8 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
   const directStreamActive = directStreamConfigured && !streamFailed;
   const separator = streamUrl.includes("?") ? "&" : "?";
   const directStreamUrl = `${streamUrl}${separator}session=${streamRevision}`;
-  const imageUrl = directStreamActive ? directStreamUrl : evidenceImageUrl;
+  const imageUrl = directStreamActive ? directStreamUrl
+    : isServiceMode && !selectedDetection && streamFailed ? null : evidenceImageUrl;
   // Requested capture modes never substitute for decoded image dimensions.
   const displayedResolution = decodedImage?.url === imageUrl && failedImage !== imageUrl
     ? decodedImage.resolution
@@ -401,7 +458,7 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
     onReplay();
   };
   return (
-    <Panel className="camera-card">
+    <Panel className="camera-card" id="inspection-camera" ref={cameraRef}>
       <PanelHeader
         title={t(directStreamActive ? "Live inspection camera" : isLiveEvidence ? "Inspection camera evidence" : "Inspection evidence replay")}
         meta={t(isLiveEvidence ? snapshot.cameraPathLabel : snapshot.imageDescription)}
@@ -418,28 +475,32 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
           </div>
           <div className="frame-number">{directStreamActive ? <>{t("Reported frame")} {snapshot.frameNumber}</> : <>{t(isLiveEvidence ? "CAPTURED FRAME" : "SAVED FRAME")} {displayedEvidence.imageFrameNumber}</>}</div>
         </div>
-        <div className="camera-stage__frame" style={frameAspect ? { "--frame-aspect": frameAspect } : undefined}>
-          {imageUrl
-            ? <img
-                key={`${imageUrl}:${streamRevision}`}
-                className={directStreamActive ? "camera-stream" : undefined}
-                src={imageUrl}
-                alt={t(directStreamActive ? "Live {source} inspection stream" : "Saved {source} image from frame {frame}",
-                { source: t(snapshot.source), frame: displayedEvidence.imageFrameNumber })}
-                onLoad={(event) => {
-                  const { naturalWidth, naturalHeight } = event.currentTarget;
-                  if (naturalWidth && naturalHeight) {
-                    setFrameAspect(`${naturalWidth} / ${naturalHeight}`);
-                    setDecodedImage({ url: imageUrl, ...createResolutionMetadata({ widthPx: naturalWidth, heightPx: naturalHeight }) });
-                    setFailedImage(null);
-                  }
-                }}
-                onError={() => { setFailedImage(imageUrl); if (directStreamActive) setStreamFailed(true); }}
-              />
-            : <div className="camera-loading"><CircleNotch size={28} /> {t(isServiceMode ? "Waiting for service image" : "Loading captured evidence")}</div>}
+        <div className="camera-stage__viewport">
+          <div className="camera-stage__frame" style={frameAspect ? { "--frame-aspect": frameAspect } : undefined}>
+            {imageUrl
+              ? <img
+                  key={`${imageUrl}:${streamRevision}`}
+                  className={directStreamActive ? "camera-stream" : undefined}
+                  src={imageUrl}
+                  alt={t(directStreamActive ? "Live {source} inspection stream" : "Saved {source} image from frame {frame}",
+                  { source: t(snapshot.source), frame: displayedEvidence.imageFrameNumber })}
+                  onLoad={(event) => {
+                    const { naturalWidth, naturalHeight } = event.currentTarget;
+                    if (naturalWidth && naturalHeight) {
+                      setFrameAspect(`${naturalWidth} / ${naturalHeight}`);
+                      setDecodedImage({ url: imageUrl, ...createResolutionMetadata({ widthPx: naturalWidth, heightPx: naturalHeight }) });
+                      setFailedImage(null);
+                    }
+                  }}
+                  onError={() => { setFailedImage(imageUrl); if (directStreamActive) setStreamFailed(true); }}
+                />
+              : <div className="camera-loading"><Camera size={28} /> {t(isServiceMode ? snapshot.serviceAvailable ? "Verify the configured camera is connected, then reconnect the camera stream." : "Connect the camera and start the local camera service, then retry." : "Loading captured evidence")}</div>}
+          </div>
         </div>
-        {failedImage === imageUrl ? <div className="frame-notice" role="alert">{t("Image unavailable. Retry loading the evidence.")}</div> : null}
-        {blocked && !displayedEvidence.isSelectedRecord ? <div className="frame-notice"><Warning size={17} /> {t(isServiceMode && snapshot.cameraState === "HEALTHY" ? "WAITING FOR MATERIAL" : "PROCESSING HOLD")} · {t(snapshot.cameraState)}</div> : null}
+        {imageUrl && failedImage === imageUrl ? <div className="frame-notice" role="alert">{t("Image unavailable. Retry loading the evidence.")}</div> : null}
+        {isServiceMode && snapshot.loadError ? <div className="frame-notice" role="alert">{snapshot.loadError}</div> : null}
+        {blocked && !displayedEvidence.isSelectedRecord ? <div className="frame-notice"><Warning size={17} /> {t(isServiceMode && frameNotJudged(snapshot) ? "FRAME NOT JUDGED" : isServiceMode && snapshot.cameraState === "HEALTHY" ? "WAITING FOR MATERIAL" : "PROCESSING HOLD")} · {t(snapshot.cameraState)}{isServiceMode && manualInspectionAdvised(snapshot) ? <> · {t("Manual inspection recommended")}</> : null}</div> : null}
+        {isServiceMode && !displayedEvidence.isSelectedRecord && demoGradeText(snapshot) ? <div className="frame-notice" role="status">{t(demoGradeText(snapshot))}</div> : null}
         <div className="camera-stage__footer">
           <span>ROI: {snapshot.roiPx.join(", ")} px</span>
           <span>{displayedEvidence.isSelectedRecord
@@ -448,12 +509,18 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
         </div>
       </div>
       {isServiceMode ? <FrameHeartbeat snapshot={snapshot} /> : null}
+      {fullscreenError ? <div className="frame-notice" role="alert">{t(fullscreenError)}</div> : null}
       <div className="camera-controls">
+        <button className="button button--secondary camera-fullscreen-button" type="button" onClick={toggleFullscreen} aria-controls="inspection-camera" aria-pressed={isFullscreen}>
+          {t(isFullscreen ? "Exit fullscreen" : "Fullscreen view")}
+        </button>
         <button className="button button--secondary" type="button" onClick={refreshCamera}>
-          <ArrowsClockwise size={16} /> {t(directStreamConfigured ? "Reconnect camera stream" : isLiveEvidence ? "Refresh captured evidence" : displayedEvidence.isSelectedRecord ? "Return to fault replay" : "Replay fault scenario")}
+          <ArrowsClockwise size={16} /> {t(isServiceMode || directStreamConfigured ? "Reconnect camera stream" : isLiveEvidence ? "Refresh captured evidence" : displayedEvidence.isSelectedRecord ? "Return to fault replay" : "Replay fault scenario")}
         </button>
         <span><CircleNotch size={15} /> {directStreamActive
           ? t(isServiceMode ? "Live camera · detections update over WebSocket" : "Direct camera feed · saved evidence updates separately")
+          : isServiceMode && !snapshot.currentFrameAvailable
+          ? t("Waiting for a stable image source.")
           : isLiveEvidence
           ? t("Captured run · frame {frame}", { frame: displayedEvidence.imageFrameNumber })
           : displayedEvidence.isSelectedRecord
@@ -476,7 +543,7 @@ function LatestDetection({ detection, snapshot, selected = false }) {
         <div className="empty-candidate">
           <CircleNotch size={35} />
           <strong>{t("No candidate recorded at this step")}</strong>
-          <span>{t(snapshot.cameraState !== "HEALTHY" ? "Waiting for a stable image source." : snapshot.automaticActionsAllowed ? "No candidate in the current processed frame." : isServiceMode ? "Place material inside the configured ROI to begin detection." : "The replay safety gate is holding image processing.")}</span>
+          <span>{t(snapshot.cameraState !== "HEALTHY" ? "Waiting for a stable image source." : frameNotJudged(snapshot) ? "The specimen is in view but this frame was not judged; see the reason on the image." : snapshot.automaticActionsAllowed ? "No candidate in the current processed frame." : isServiceMode ? "Place material inside the configured ROI to begin detection." : "The replay safety gate is holding image processing.")}</span>
         </div>
         {!physicalMeasurementsAvailable ? <UnmeasuredFields /> : null}
       </Panel>
@@ -530,14 +597,16 @@ function KpiRow({ snapshot, eventCount }) {
     latency: snapshot.postDecodeToGuiLatencyMs == null ? "-- ms" : `${snapshot.postDecodeToGuiLatencyMs} ms`,
   };
   return (
-    <section className="kpi-grid" aria-label={t(isLiveEvidence ? "Verified live integration metrics" : "Verified offline state metrics")}>
-      {definitions.map(({ key, label, icon: Icon }) => (
-        <article className="kpi-card" key={key}>
-          <Icon size={34} weight="duotone" />
-          <div><span>{t(label)}</span><strong>{values[key]}</strong></div>
-        </article>
-      ))}
-    </section>
+    <GlassSurface className="kpi-surface">
+      <section className="kpi-grid" aria-label={t(isLiveEvidence ? "Live integration metrics" : "Verified offline state metrics")}>
+        {definitions.map(({ key, label, icon: Icon }) => (
+          <article className="kpi-card" key={key}>
+            <Icon size={34} weight="duotone" />
+            <div><span>{t(label)}</span><strong>{values[key]}</strong></div>
+          </article>
+        ))}
+      </section>
+    </GlassSurface>
   );
 }
 
@@ -548,7 +617,7 @@ function SampleWorkflowSummary({ snapshot }) {
       <PanelHeader title={t("Sample workflow")} meta={t(snapshot.cameraPathLabel)} />
       <p>{t("Hold the specimen still. Index six angles manually; capture one lighting view at a time.")}</p>
       <div className="sample-workflow-views"><b>6 × 2</b><span>{t("12 views per sample")}</span></div>
-      <a className="button button--primary" href="#sample-capture"><Camera size={17} />{t("Open offline sample capture")}</a>
+      <a className="button button--primary" href="#sample-capture"><Camera size={17} />{t("Open sample capture")}</a>
     </Panel>
   );
 }
@@ -586,7 +655,7 @@ function CandidateTable({ events, onSelect, onDelete, selectedId, large = false 
         <tbody>
           {events.map((event) => (
             <tr
-              key={event.id}
+              key={event.recordIds?.[0] ?? event.id}
               className={onSelect ? `selectable-row ${event.id === selectedId ? "is-selected" : ""}` : ""}
               onClick={() => onSelect?.(event)}
             >

@@ -1,5 +1,21 @@
 # ENG5105 — rPLA Filament Surface-Quality Monitoring
 
+The default working directory is `D:\12591\Documents\5105`.
+Codex project instructions are maintained in [AGENTS.md](AGENTS.md).
+The dated presentation projects and earlier report workflow materials are retained
+alongside the current software and the final report archive.
+
+The 2026-09-08 review fixes and their verification are recorded in
+[the implementation follow-up](docs/code_review_fixes_20260908.md).
+
+The Plan A profile now uses a static-specimen geometry inspector
+(`static-rpla-geometry-2`): it measures the projected width of a held specimen
+in bright field and reports why a view was not judged instead of reporting it
+as defect-free. Its design, parameters, reason codes and the remaining phases
+are in [docs/static_rpla_inspection.md](docs/static_rpla_inspection.md).
+Saved images can be replayed with
+`.\.venv\Scripts\python.exe scripts/replay_static_inspection.py IMAGE ...`.
+
 A laboratory-scale machine-vision system that inspects held recycled PLA (rPLA) filament
 for visible surface anomalies, and records each finding as a
 traceable candidate event.
@@ -35,17 +51,34 @@ receipt gate.
 
 ## Camera sources and shared pipeline
 
-The GUI opens the Plan A ALC-IMX258 USB/UVC simulation by default, using a
-separate generated image and candidate-evidence bundle. The dashboard, records,
-CSV export and health page share that source identity. It remains synthetic
-software evidence; physical USB capture is selected separately using the camera
-configuration below. The offline sample workbench is available in the GUI's
-left navigation.
+### 本机相机展示
+
+接上外接 USB 相机后，在项目根目录双击 `START_CAMERA_DEMO.cmd`，浏览器会打开
+<http://127.0.0.1:5177/>。默认使用此前在这台电脑识别的 DirectShow 设备 `1`，
+请求 UHD / MJPG；实际分辨率和刷新状态以连接后的界面为准。
+点击画面下方的 **Fullscreen view / 全屏展示** 放大画面，按 Esc 或点击退出全屏返回。
+右上角可切换中英文，**Reconnect camera stream / 重新连接相机** 用于重新连接。
+
+未接相机时显示等待连接状态。展示结束后双击 `STOP_CAMERA_DEMO.cmd` 释放相机和本次服务。
+再次启动前先停止旧服务；仅关闭网页不会停止采集。展示产生的样本记录单独存放在
+`data/output/camera_demo/`，日志位于 `data/output/week8_runtime/`。
+
+只预览界面而不打开设备时，在根目录运行 `./START_CAMERA_DEMO.cmd -WaitForCamera`；
+需要确认启动配置时运行 `./START_CAMERA_DEMO.cmd -CheckConfig`。
+设备编号在换电脑或改变设备连接后可能变化，确认编号后可用 `-CameraDevice 2` 覆盖。
+当前展示用于查看相机画面与采集流程；材料缺陷判定和毫米测量仍需实物验证与标定。
+
+The GUI defaults to the Plan A ALC-IMX258 USB/UVC camera service. Inspection,
+camera preview and the sample workbench share one acquisition process. Without
+a connected camera the interface shows the connection state and disables capture.
+The sample workbench saves one selected angle/lighting view per click, with raw
+and annotated images, retake history and CSV traceability. Camera connection
+evidence does not establish optical calibration or defect performance.
 
 The resident software accepts either Plan A's ALC-IMX258 USB/UVC source or Plan B's
 ESP32S3/OV3660 network MJPEG source through the same `CameraSource` / `FramePacket`
-contract. Plan B remains the default runnable configuration; select `usb_uvc` for
-Plan A. The USB adapter has hardware-free software tests. Its requested capture
+contract. The Week 8 launcher selects Plan A explicitly; the legacy live launcher
+retains its Plan B configuration. The USB adapter has hardware-free software tests. Its requested capture
 modes and provisional inspection settings are not camera-performance results.
 
 ```
@@ -89,9 +122,23 @@ Run the test suite:
 .venv/Scripts/python.exe -m pytest
 ```
 
-Run the live service and GUI together (needs the camera powered and on the same
-network; the ESP32 CameraWebServer preview must be closed, since the Python
-service has to be the only direct MJPEG client):
+Start the camera service and GUI for Plan A, including before camera arrival:
+
+```powershell
+.\START_RPLA_WEEK8.cmd
+```
+
+Open `http://127.0.0.1:5177/#sample-capture`. Startup succeeds when the service
+and GUI are ready; camera readiness is shown separately. Stop with
+`STOP_RPLA_WEEK8.cmd`. Select an explicit device or mode with
+`-CameraDevice 0 -CameraBackend dshow -Resolution UHD`; append `-CheckConfig`
+to check the selection without opening hardware or launching services.
+
+See [WEEK8_IMPLEMENTATION.md](WEEK8_IMPLEMENTATION.md) for acquisition,
+independent archives, incoming inspection and the Windows/Pi preparation steps.
+
+The legacy continuous service remains available for Plan B (camera powered and
+on the same network; close its CameraWebServer preview before starting):
 
 ```bash
 START_RPLA_LIVE.cmd
@@ -116,7 +163,7 @@ profiles, requested versus actual image sizes, and software checks.
 
 Offline demos that need no hardware:
 
-Week 7 adds a triggered sample workbench for six angles and two lighting modes.
+The explicit Week 7 offline launcher retains the synthetic sample workbench for six angles and two lighting modes.
 Run `START_RPLA_WEEK7.cmd` and open `http://127.0.0.1:5177`. It uses synthetic
 images and simulated MCU messages, archives raw/annotated images and retakes,
 and keeps physical measurements and outputs disabled. See
@@ -142,6 +189,7 @@ cd gui-prototype && pnpm install && pnpm run dev
 | `src/week4/` | Camera connection policy, state monitor, one-slot buffer, ESP32 MJPEG and USB/UVC adapters |
 | `src/camera_config.py` | Source selection, per-camera capture/inspection profiles and legacy configuration support |
 | `src/live_service.py` | Resident service: acquisition/inspection threads, REST, MJPEG, WebSocket |
+| `src/week8_service.py` | Plan A service combining continuous preview and triggered camera sample capture |
 | `config/` | Runtime configuration per scenario (resolution profiles, ROI, gates, thresholds) |
 | `tests/` | pytest suite, hardware-free via injected capture/source factories |
 | `gui-prototype/` | React operator interface |

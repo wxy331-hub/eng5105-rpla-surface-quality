@@ -13,6 +13,7 @@ import json
 import math
 import statistics
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -190,16 +191,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=PROJECT_ROOT / "data" / "output" / "latency" / "latency_20260811.json",
+        default=PROJECT_ROOT / "data" / "output" / "latency" / (
+            f"latency_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:10]}.json"
+        ),
+        help="New JSON output path; existing files are never overwritten",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    result = measure(args)
+    if args.output.exists():
+        raise FileExistsError(f"Output already exists: {args.output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    result = measure(args)
+    # Exclusive creation also protects a file created by another run during measurement.
+    with args.output.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     print(f"Saved: {args.output}")
     return 0

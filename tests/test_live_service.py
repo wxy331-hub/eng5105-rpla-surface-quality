@@ -1,11 +1,16 @@
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
+import cv2
 import numpy as np
+import pytest
 
+from src import live_service
 from src.live_service import InspectionRuntime, configure_camera, load_service_config
-from src.week3 import CameraState, FramePacket
+from src.week3 import CameraState, FramePacket, SQLiteInspectionRepository, SyntheticCameraSource
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "live_service.json"
@@ -158,3 +163,97 @@ def test_material_presence_gate_rejects_empty_scene_and_accepts_vertical_target(
 
     dark_background = np.full((config.expected_height_px, config.expected_width_px, 3), 40, dtype=np.uint8)
     assert runtime._material_present(dark_background) is False
+
+
+@pytest.mark.parametrize("expiry_stage", ["buffer", "processing", "newer_raw_frame"])
+def test_expired_frame_cannot_be_inspected_or_committed(monkeypatch, tmp_path, expiry_stage):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(live_service, "time", SimpleNamespace(
+        monotonic=lambda: clock.value, perf_counter=lambda: clock.value,
+    ))
+    config = replace(
+        load_service_config(CONFIG_PATH), database_path=tmp_path / "expired.db",
+        expected_width_px=320, expected_height_px=180, roi_px=(20, 40, 280, 100),
+        presence_gate_enabled=False, recovery_frames=1,
+    )
+    source = SyntheticCameraSource(width_px=320, height_px=180, source_name=config.source_name)
+    source.connect()
+    packets = list(source.frames(2))
+    runtime = InspectionRuntime(config, source_factory=lambda: source)
+    runtime._accept_packet(packets[0])
+    assert runtime.snapshot_payload()["summary"]["camera_state"] == "HEALTHY"
+    runtime._publish_frame(packets[0])
+    original_processor = runtime._processor
+    calls = []
+
+    class DelayedProcessor:
+        def process(self, packet, batch):
+            calls.append(packet.frame_id)
+            clock.value += 3.0
+            if expiry_stage == "newer_raw_frame":
+                runtime._publish_frame(packets[1])
+            return original_processor.process(packet, batch)
+
+    runtime._processor = DelayedProcessor()
+    if expiry_stage == "buffer":
+        clock.value += 3.0
+    take = runtime._take_buffered_frame
+
+    def take_once(timeout):
+        item = take(timeout)
+        runtime._stop_event.set()
+        return item
+
+    monkeypatch.setattr(runtime, "_take_buffered_frame", take_once)
+    # Run the real processing loop once, including its buffer metadata handoff.
+    runtime._process()
+    with SQLiteInspectionRepository(config.database_path) as repository:
+        assert repository.list_detections(runtime.batch_id) == []
+    assert calls == ([] if expiry_stage == "buffer" else [1])
+    summary = runtime.snapshot_payload()["summary"]
+    assert summary["frames_received"] == 1
+    assert summary["camera_state"] != "HEALTHY"
+    assert summary["detection_active"] is False
+    assert runtime.latest_jpeg()[1] is None
+
+
+def test_snapshot_and_jpeg_age_out_even_when_processing_has_not_polled(monkeypatch):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(live_service, "time", SimpleNamespace(
+        monotonic=lambda: clock.value, perf_counter=lambda: clock.value,
+    ))
+    config = replace(load_service_config(CONFIG_PATH), recovery_frames=1)
+    runtime = InspectionRuntime(config)
+    runtime._accept_packet(_healthy_packet(config))
+    clock.value += config.stale_after_s
+    assert runtime.latest_jpeg()[1] is None
+    assert runtime.snapshot_payload()["summary"]["camera_state"] == "STALE"
+
+
+@pytest.mark.parametrize("opened", [True, False])
+def test_plan_b_capture_passes_timeouts_when_opening(monkeypatch, opened):
+    calls = []
+
+    class Capture:
+        def open(self, *args):
+            calls.append(args)
+            return opened
+
+        def release(self):
+            calls.append("released")
+
+    capture = Capture()
+    monkeypatch.setattr(cv2, "VideoCapture", lambda: capture)
+    config = load_service_config(CONFIG_PATH)
+    runtime = InspectionRuntime(config)
+    url = "http://192.0.2.1:81/stream"
+    if opened:
+        assert runtime._make_capture(url) is capture
+    else:
+        with pytest.raises(ConnectionError, match="MJPEG"):
+            runtime._make_capture(url)
+        assert calls[-1] == "released"
+    assert calls[0] == (url, cv2.CAP_FFMPEG, [
+        cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, config.open_timeout_ms,
+        cv2.CAP_PROP_READ_TIMEOUT_MSEC, config.read_timeout_ms,
+    ])

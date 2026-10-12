@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import json
 import socket
+import sqlite3
 from threading import Thread
 import time
 from urllib.error import HTTPError
@@ -115,3 +116,13 @@ def test_pending_file_cleanup_remains_discoverable_and_retryable(tmp_path, sampl
         assert status == 200 and not result["cleanup_pending"]
         assert result["deleted_image_count"] == 2
         assert request(base, "/api/week7/health")[1]["pending_deletions"] == []
+
+
+def test_database_unavailable_returns_structured_503(tmp_path, sample_capture_config, monkeypatch):
+    with local_server(tmp_path, sample_capture_config) as base:
+        def unavailable(_):
+            raise sqlite3.OperationalError("test database unavailable")
+        monkeypatch.setattr(SampleStore, "list_samples", unavailable)
+        status, result = request(base, "/api/week7/samples")
+        assert status == 503
+        assert "test database unavailable" in result["detail"]

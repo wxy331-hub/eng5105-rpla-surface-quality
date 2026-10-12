@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import Event
@@ -198,7 +199,7 @@ def test_single_view_capture_keeps_other_lighting_missing(tmp_path, sample_captu
     assert {"angle_deg": 60, "lighting_mode": "bright_field"} in first["missing_views"]
     requests = [event for event in first["events"] if event["event_type"] == "LIGHTING_REQUEST"]
     assert len(requests) == 1 and requests[0]["details"]["lighting_mode"] == "dark_field"
-    assert first["events"][-1]["event_type"] == "SIMULATED_OFF_ACK"
+    assert [event["event_type"] for event in first["events"]][-2:] == ["SIMULATED_OFF_ACK", "CAPTURE_ARCHIVED"]
 
     dark = first["current_views"][0]
     dark_path = workflow.store.image_path(dark["capture_id"], "raw")
@@ -302,3 +303,58 @@ def test_delete_waits_for_in_flight_single_view_capture(tmp_path, sample_capture
     assert session not in workflow._controllers
     with pytest.raises(KeyError):
         workflow.store.get_sample(session)
+
+
+def test_success_event_failure_rolls_back_retake_and_preserves_original(tmp_path, sample_capture_config):
+    workflow = SampleWorkflow(tmp_path, config_path=sample_capture_config)
+    session = workflow.create_sample("ATOMIC-ARCHIVE")["session_id"]
+    before = workflow.capture_view(session, 0, "bright_field")
+    images = {path: path.read_bytes() for path in tmp_path.rglob("*.png")}
+    with workflow.store._connection() as connection:
+        connection.execute("CREATE TRIGGER fail_archive_event BEFORE INSERT ON sample_events "
+                           "WHEN NEW.event_type = 'CAPTURE_ARCHIVED' "
+                           "BEGIN SELECT RAISE(ABORT, 'archive event rejected'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="archive event rejected"):
+        workflow.capture_view(session, 0, "bright_field", retake=True)
+    after = workflow.store.get_sample(session)
+    assert after["captures"] == before["captures"]
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*.png")} == images
+    assert not list(tmp_path.rglob("*.pending"))
+    assert [event["event_type"] for event in after["events"]][-2:] == ["SIMULATED_OFF_ACK", "CAPTURE_FAILED"]
+
+
+def test_off_event_failure_prevents_retake_commit(tmp_path, sample_capture_config):
+    workflow = SampleWorkflow(tmp_path, config_path=sample_capture_config)
+    session = workflow.create_sample("OFF-EVENT-FAILURE")["session_id"]
+    before = workflow.capture_view(session, 0, "bright_field")
+    images = {path: path.read_bytes() for path in tmp_path.rglob("*.png")}
+    with workflow.store._connection() as connection:
+        connection.execute("CREATE TRIGGER fail_off_event BEFORE INSERT ON sample_events "
+                           "WHEN NEW.event_type = 'SIMULATED_OFF_ACK' "
+                           "BEGIN SELECT RAISE(ABORT, 'off event rejected'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="off event rejected"):
+        workflow.capture_view(session, 0, "bright_field", retake=True)
+    assert workflow._controllers[session].state == "OFF"
+    assert workflow.store.get_sample(session)["captures"] == before["captures"]
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*.png")} == images
+    assert workflow.health()["last_fault"] == "off event rejected"
+
+
+@pytest.mark.parametrize("event_type", ["CAPTURE_FAILED", "SIMULATED_OFF_ACK"])
+def test_failure_cleanup_event_does_not_replace_capture_error(tmp_path, sample_capture_config, event_type):
+    class BrokenSource:
+        def capture(self):
+            raise RuntimeError("original source failure")
+
+    workflow = SampleWorkflow(tmp_path, config_path=sample_capture_config, source=BrokenSource())
+    session = workflow.create_sample("PRESERVE-FAILURE")["session_id"]
+    with workflow.store._connection() as connection:
+        connection.execute("CREATE TRIGGER fail_cleanup_event BEFORE INSERT ON sample_events "
+                           f"WHEN NEW.event_type = '{event_type}' "
+                           "BEGIN SELECT RAISE(ABORT, 'cleanup event rejected'); END")
+    with pytest.raises(RuntimeError, match="original source failure") as caught:
+        workflow.capture_view(session, 0, "bright_field")
+    assert workflow._controllers[session].state == "OFF"
+    assert workflow.store.get_sample(session)["captures"] == []
+    assert workflow.health()["last_fault"] == "original source failure"
+    assert any("cleanup event rejected" in note for note in caught.value.__notes__)

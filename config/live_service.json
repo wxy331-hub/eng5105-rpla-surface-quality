@@ -112,7 +112,27 @@
       "contamination_min_area_px": 900.0,
       "blur_kernel_size": 5,
       "morph_kernel_size": 3,
-      "description": "Development baseline only. Full-frame provisional ROI and copied heuristic defaults are not tuned for the USB camera."
+      "description": "Development baseline only. Full-frame provisional ROI. The static_rpla geometry branch locates the specimen itself, so the dark-threshold presence gate and the threshold/score keys above apply only when algorithm is baseline_threshold. static_rpla values are unvalidated starting points; see docs/static_rpla_inspection.md.",
+      "algorithm": "static_rpla_geometry",
+      "static_rpla": {
+        "filament_axis": "auto",
+        "min_feature_px": 60,
+        "min_run_px": 60,
+        "background_z_min": 5.0,
+        "min_axis_coverage": 0.9,
+        "max_edge_spread_px": null,
+        "clip_fraction_max": 0.01,
+        "good_width_range_px": null,
+        "width_local_limit_px": null
+      },
+      "static_rpla_basis": "2026-10-08 bench setup: specimen placed horizontally and then near-vertically, so the axis is detected automatically. About 500-520 px across a nominal 1.75 mm filament (about 300 px/mm, uncalibrated estimate); min_feature_px 60 corresponds to the report's proposed 0.20 mm minimum feature; edge spread limit is d/2 = 30 px. Unvalidated starting values.",
+      "static_surface": {
+        "min_feature_px": 60,
+        "preview_lighting": "bright_field",
+        "preview_angle_deg": 0,
+        "reference_path": null,
+        "demo_longitudinal_thresholds": [0.0025, 0.0099]
+      }
     }
   },
   "jpeg_quality": 86,

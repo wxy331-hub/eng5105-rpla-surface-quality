@@ -4,10 +4,10 @@ import {
   offlineDetections, offlineEvidenceSummary, offlineFrames,
   resolveDisplayedEvidence, scenarioTimeline, selectOfflineEvidence,
 } from "../src/data/offlineEvidence.js";
-import { OfflineReplayInspectionDataSource, inspectionDataSource } from "../src/services/inspectionDataSource.js";
+import { OfflineReplayInspectionDataSource } from "../src/services/inspectionDataSource.js";
 
-test("the default dashboard consumes the separate Plan A USB simulation evidence", () => {
-  const snapshot = inspectionDataSource.getSnapshot();
+test("explicit offline replay consumes the separate Plan A USB simulation evidence", () => {
+  const snapshot = new OfflineReplayInspectionDataSource().getSnapshot();
   assert.equal(snapshot.cameraSource, "PLAN_A_USB_SIMULATION");
   assert.equal(snapshot.cameraPath, "PLAN_A_ALC_IMX258_USB_UVC");
   assert.equal(snapshot.sourceType, "usb_uvc");

@@ -50,13 +50,17 @@ def resolve_stream_url(config: dict[str, Any], override: str | None) -> str:
 
 
 def open_stream(stream_url: str, config: dict[str, Any]) -> cv2.VideoCapture:
-    """打开MJPEG视频，并尽量应用OpenCV后端支持的超时参数。"""
+    """通过FFmpeg打开MJPEG视频，并在打开时传入超时参数。"""
     capture = cv2.VideoCapture()
-    capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(config.get("open_timeout_ms", 5000)))
-    capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(config.get("read_timeout_ms", 3000)))
-    if not capture.open(stream_url):
+    try:
+        if not capture.open(stream_url, cv2.CAP_FFMPEG, [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(config.get("open_timeout_ms", 5000)),
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(config.get("read_timeout_ms", 3000)),
+        ]):
+            raise ConnectionError(f"无法打开ESP32视频流: {stream_url}")
+    except Exception:
         capture.release()
-        raise ConnectionError(f"无法打开ESP32视频流: {stream_url}")
+        raise
     return capture
 
 

@@ -6,6 +6,7 @@ import {
   LiveEvidenceInspectionDataSource,
   ServiceInspectionDataSource,
   toGuiDetection,
+  resolveInspectionMode,
 } from "../src/services/inspectionDataSource.js";
 import { createResolutionMetadata } from "../src/services/resolutionMetadata.js";
 
@@ -136,8 +137,9 @@ test("loading sources remain unidentified and service images use the shared API"
     assert.equal(snapshot.automaticActionsAllowed, false);
   }
   const serviceSnapshot = new ServiceInspectionDataSource().getSnapshot();
-  assert.equal(serviceSnapshot.streamUrl, "http://127.0.0.1:8765/api/stream.mjpg");
-  assert.equal(new URL(serviceSnapshot.streamUrl).origin, new URL(serviceSnapshot.imageUrl).origin);
+  assert.equal(serviceSnapshot.streamUrl, null);
+  assert.equal(serviceSnapshot.imageUrl, null);
+  assert.equal(serviceSnapshot.currentFrameAvailable, false);
 });
 
 test("missing and unfamiliar metadata do not inherit a camera identity or invented resolution", () => {
@@ -252,8 +254,140 @@ test("collapses consecutive overlapping frame candidates into one display event"
   assert.deepEqual(episodes[0].recordIds, ["DET-2", "DET-3", "DET-4", "DET-5"]);
 });
 
+test("one static mark stays one event across skipped frames and a changing box", () => {
+  // 2026-10-12 bench: a marker dot's thresholded box grows and shrinks between
+  // frames, and some frames in between are not judged.
+  const records = [[1, [1664, 1715, 205, 183]], [2, [1662, 1649, 263, 252]], [6, [1705, 1806, 142, 184]]]
+    .map(([frame, bbox]) => toGuiDetection({ ...rawDetection, detection_id: `M${frame}`, frame_id: frame, bbox_px: bbox }, "/api/frame.jpg"));
+  const [event, extra] = collapseCandidateEpisodes(records);
+  assert.equal(extra, undefined);
+  assert.deepEqual(event.recordIds, ["M1", "M2", "M6"]);
+  // A longer gap starts a new event.
+  const later = toGuiDetection({ ...rawDetection, detection_id: "M13", frame_id: 13, bbox_px: [1705, 1806, 142, 184] }, "/api/frame.jpg");
+  assert.equal(collapseCandidateEpisodes([...records, later]).length, 2);
+});
+
+test("a separate defect nested inside a larger one keeps its own event and identity", () => {
+  // Codex review 2026-10-12: a dark ring and a separate dot inside it.
+  const make = (id, frame, bbox) => toGuiDetection({ ...rawDetection, detection_id: id, frame_id: frame, bbox_px: bbox }, "/api/frame.jpg");
+  const ring = [55, 55, 91, 91];
+  const dot = [100, 90, 21, 21];
+  assert.deepEqual(collapseCandidateEpisodes([make("A1", 1, ring), make("B3", 3, dot)]).map((event) => event.recordIds), [["A1"], ["B3"]]);
+  assert.deepEqual(collapseCandidateEpisodes([make("A1", 1, ring), make("B1", 1, dot), make("A2", 2, ring), make("B2", 2, dot)])
+    .map((event) => event.recordIds), [["A1", "A2"], ["B1", "B2"]]);
+});
+
 test("keeps spatially separate candidates as separate events", () => {
   const first = toGuiDetection({ ...rawDetection, detection_id: "DET-A", frame_id: 2, bbox_px: [10, 10, 20, 20] }, "/live-evidence/annotated_frame.jpg");
   const second = toGuiDetection({ ...rawDetection, detection_id: "DET-B", frame_id: 3, bbox_px: [200, 200, 20, 20] }, "/live-evidence/annotated_frame.jpg");
   assert.equal(collapseCandidateEpisodes([first, second]).length, 2);
+});
+
+test("matches interleaved candidates to their own event and keeps all deletion IDs", () => {
+  const records = [1, 2, 3].flatMap((frameId) => [
+    ["A", [10 + frameId, 10, 20, 20]],
+    ["B", [200 + frameId, 200, 20, 20]],
+  ].map(([label, bbox]) => toGuiDetection({
+    ...rawDetection, detection_id: `${label}${frameId}`, frame_id: frameId, bbox_px: bbox,
+  }, "/api/frame.jpg")));
+  const original = structuredClone(records);
+  const events = collapseCandidateEpisodes(records);
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.recordIds), [["A1", "A2", "A3"], ["B1", "B2", "B3"]]);
+  assert.deepEqual(events.map((event) => event.frameLabel), ["1–3", "1–3"]);
+  assert.deepEqual(events.map((event) => event.occurrences), [3, 3]);
+  assert.deepEqual(records, original, "event grouping must not change the raw CSV/archive records");
+});
+
+test("an event represents one complete real record while tracking its latest frame", () => {
+  const records = [
+    { detection_id: "first", frame_id: 1, confidence: 0.6, area_px: 150, bbox_px: [10, 10, 20, 20], received_at_utc: "2026-09-08T00:00:01Z" },
+    { detection_id: "peak", frame_id: 2, confidence: 0.9, area_px: 300, bbox_px: [11, 10, 20, 20], received_at_utc: "2026-09-08T00:00:02Z" },
+    { detection_id: "last", frame_id: 3, confidence: 0.7, area_px: 200, bbox_px: [12, 10, 20, 20], received_at_utc: "2026-09-08T00:00:03Z" },
+  ].map((changes) => toGuiDetection({ ...rawDetection, ...changes }, `/images/${changes.detection_id}.jpg`));
+  const [event] = collapseCandidateEpisodes(records);
+  for (const key of Object.keys(records[1])) assert.deepEqual(event[key], records[1][key], `representative ${key} must come from the peak record`);
+  assert.equal(event.frameLabel, "1–3");
+  assert.equal(event.occurrences, 3);
+  assert.deepEqual(event.recordIds, ["first", "peak", "last"]);
+});
+
+test("overlapping candidates in the same frame remain distinct and match at most once next frame", () => {
+  const records = [["A1", 1, 10], ["B1", 1, 15], ["A2", 2, 11], ["B2", 2, 16]]
+    .map(([id, frame, x]) => toGuiDetection({ ...rawDetection, detection_id: id, frame_id: frame, bbox_px: [x, 10, 20, 20] }, "/api/frame.jpg"));
+  assert.deepEqual(collapseCandidateEpisodes(records).map((event) => event.recordIds), [["A1", "A2"], ["B1", "B2"]]);
+});
+
+test("event continuity follows the most recent box even when the peak score was earlier", () => {
+  const records = [1, 2, 3].map((frame) => toGuiDetection({
+    ...rawDetection, detection_id: `D${frame}`, frame_id: frame,
+    bbox_px: [frame * 5, 10, 20, 20], confidence: frame === 1 ? 0.9 : 0.7,
+  }, "/api/frame.jpg"));
+  const [event, extra] = collapseCandidateEpisodes(records);
+  assert.equal(extra, undefined);
+  assert.equal(event.id, "D1");
+  assert.deepEqual(event.recordIds, ["D1", "D2", "D3"]);
+});
+
+test("camera service is the default and archived modes require explicit selection", () => {
+  for (const mode of [undefined, "", "service", "week8", "unknown"]) assert.equal(resolveInspectionMode(mode), "service");
+  assert.equal(resolveInspectionMode("offline"), "offline");
+  assert.equal(resolveInspectionMode("week7"), "offline");
+  assert.equal(resolveInspectionMode("live"), "live");
+});
+
+test("service frames expire without presenting an old candidate as the current frame", () => {
+  const current = { ...summary, camera_state: "HEALTHY", current_frame_id: 12, frame_age_ms: 10, stale_after_ms: 1000, automatic_actions_allowed: true };
+  const older = { ...rawDetection, frame_id: 11 };
+  const fresh = createLiveEvidenceSnapshot(current, [older], "/api/frame.jpg", { serviceFrame: true });
+  assert.equal(fresh.currentDetection, null);
+  assert.equal(fresh.defects.length, 1, "stored evidence remains in the archive list");
+  assert.equal(fresh.currentFrameAvailable, true);
+  for (const changes of [{ camera_state: "DISCONNECTED" }, { camera_state: "STALE" }, { frame_age_ms: 1001 }, { current_frame_id: null }]) {
+    const stale = createLiveEvidenceSnapshot({ ...current, ...changes }, [older], "/api/frame.jpg", { serviceFrame: true });
+    assert.equal(stale.imageUrl, null);
+    assert.equal(stale.currentDetection, null);
+    assert.equal(stale.automaticActionsAllowed, false);
+    assert.equal(stale.defects.length, 1);
+  }
+});
+
+test("WebSocket loss clears live imagery and reconnect failure stays visible", async () => {
+  let socket;
+  const payload = { summary: { ...summary, camera_state: "HEALTHY", current_frame_id: 12, frame_age_ms: 10, stale_after_ms: 1000, automatic_actions_allowed: true, view_inspection: { geometry_status: "valid", reason_codes: [] } }, detections: [{ ...rawDetection, frame_id: 12 }] };
+  const source = new ServiceInspectionDataSource({
+    baseUrl: "http://127.0.0.1:9876",
+    fetchImpl: async (url) => ({ ok: !url.endsWith("/reconnect"), status: 503, json: async () => payload }),
+    socketFactory: () => (socket = { readyState: 1, close() { this.readyState = 3; this.onclose?.(); } }),
+  });
+  const unsubscribe = source.subscribe(() => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(source.getSnapshot().streamUrl, "http://127.0.0.1:9876/api/stream.mjpg");
+    assert.equal(source.getSnapshot().currentDetection.frameId, 12);
+    assert.equal(source.getSnapshot().viewInspection.geometry_status, "valid");
+    socket.close();
+    assert.equal(source.getSnapshot().cameraState, "RECONNECTING");
+    // The analysis belongs to the withdrawn frame (Codex review 2026-10-07).
+    assert.equal(source.getSnapshot().viewInspection, null);
+    assert.equal(source.getSnapshot().imageUrl, null);
+    assert.equal(source.getSnapshot().streamUrl, null);
+    assert.equal(source.getSnapshot().currentDetection, null);
+    assert.equal((await source.listDefects()).length, 1);
+    await source.replayScenario();
+    assert.equal(source.getSnapshot().cameraState, "DISCONNECTED");
+    assert.match(source.getSnapshot().loadError, /503/);
+  } finally { unsubscribe(); }
+});
+
+test("an unsubscribed HTTP result cannot restore a disconnected service or open a socket", async () => {
+  let resolveFetch;
+  let socketCalls = 0;
+  const source = new ServiceInspectionDataSource({ fetchImpl: () => new Promise((resolve) => { resolveFetch = resolve; }), socketFactory: () => { socketCalls += 1; } });
+  const unsubscribe = source.subscribe(() => {});
+  unsubscribe();
+  resolveFetch({ ok: true, json: async () => ({ summary, detections: [] }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(socketCalls, 0);
+  assert.equal(source.getSnapshot().imageUrl, null);
 });

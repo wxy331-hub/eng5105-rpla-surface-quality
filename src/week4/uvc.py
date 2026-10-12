@@ -109,12 +109,13 @@ class UsbUvcSource(CameraSource):
             if not self._capture.open(self.device, _BACKENDS[self.backend]) or not self._capture.isOpened():
                 raise ConnectionError(f"could not open UVC device {self.device!r} with backend {self.backend}")
             requested = [
-                ("pixel_format", cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.pixel_format)),
                 ("width_px", cv2.CAP_PROP_FRAME_WIDTH, self.width_px),
                 ("height_px", cv2.CAP_PROP_FRAME_HEIGHT, self.height_px),
             ]
             if self.fps is not None:
                 requested.append(("fps", cv2.CAP_PROP_FPS, self.fps))
+            # DirectShow can reset the format when size or FPS changes; request it last.
+            requested.append(("pixel_format", cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.pixel_format)))
             for name, prop, value in requested:
                 if not self._capture.set(prop, value):
                     raise ConnectionError(f"UVC device rejected requested {name}={value!r}")

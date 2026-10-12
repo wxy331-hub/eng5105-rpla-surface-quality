@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
+from urllib.parse import urlsplit
 
 import cv2
 
@@ -111,6 +112,9 @@ class Esp32MjpegSource(CameraSource):
         configure: Callable[[], Any] | None = None,
         policy: ConnectionPolicy | None = None,
     ) -> None:
+        address = urlsplit(stream_url)
+        if address.scheme not in {"http", "https"} or not address.hostname:
+            raise ValueError("MJPEG source requires an HTTP(S) camera URL")
         self.stream_url = stream_url
         self.source_name = source_name
         self.capture_factory = capture_factory

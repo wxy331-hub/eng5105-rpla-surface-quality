@@ -284,3 +284,51 @@ def test_workflow_failure_and_off_events_survive_store_restart_in_order(tmp_path
     with pytest.raises(ValueError):
         restarted.append_event(session, "CAPTURE_FAILED", {"value": float("nan")})
     assert restarted.get_sample(session)["events"] == expected
+
+def test_analysis_is_stored_with_its_capture_and_legacy_captures_stay_unassessed(tmp_path):
+    store = SampleStore(tmp_path)
+    session = store.create_sample("FIL-ANALYSIS")["session_id"]
+    legacy = capture(store, session)
+    analysis = {"algorithm_version": "static-rpla-geometry-1", "geometry_status": "rejected",
+                "reason_codes": ["FOCUS_INADEQUATE"], "candidates": [], "metrics": {"edge_spread_px_median": 64.2}}
+    saved = capture(store, session, angle=60, analysis=analysis)
+    assert saved["analysis"]["capture_id"] == saved["capture_id"]
+    assert saved["analysis_status"] == "rejected"
+    sample = store.get_sample(session)
+    by_id = {item["capture_id"]: item for item in sample["captures"]}
+    assert by_id[legacy["capture_id"]]["analysis"] is None
+    assert by_id[legacy["capture_id"]]["analysis_status"] == "legacy_unassessed"
+    assert by_id[saved["capture_id"]]["analysis"]["metrics"]["edge_spread_px_median"] == 64.2
+    rows = {row["capture_id"]: row for row in csv.DictReader(io.StringIO(store.export_csv(session)))}
+    assert rows[saved["capture_id"]]["analysis_status"] == "rejected"
+    assert rows[saved["capture_id"]]["analysis_reason_codes"] == "FOCUS_INADEQUATE"
+    assert rows[legacy["capture_id"]]["analysis_status"] == "legacy_unassessed"
+
+
+@pytest.mark.parametrize("analysis", [{"reason_codes": []}, {"geometry_status": "valid", "x": float("nan")}])
+def test_invalid_analysis_creates_no_capture(tmp_path, analysis):
+    store = SampleStore(tmp_path)
+    session = store.create_sample("FIL-BAD")["session_id"]
+    with pytest.raises(ValueError):
+        capture(store, session, analysis=analysis)
+    sample = store.get_sample(session)
+    assert sample["captures"] == [] and sample["events"] == []
+    assert list(tmp_path.rglob("*.png")) == []
+
+
+def test_failed_commit_leaves_no_orphan_analysis_event(tmp_path):
+    store = SampleStore(tmp_path)
+    session = store.create_sample("FIL-GUARD")["session_id"]
+
+    class Guard:
+        def __enter__(self):
+            raise ConnectionError("camera lost before commit")
+
+        def __exit__(self, *exc):
+            return False
+
+    with pytest.raises(ConnectionError):
+        capture(store, session, analysis={"geometry_status": "valid", "candidates": []}, commit_guard=Guard)
+    sample = store.get_sample(session)
+    assert sample["captures"] == []
+    assert not any(event["event_type"] == "CAPTURE_ANALYSIS" for event in sample["events"])

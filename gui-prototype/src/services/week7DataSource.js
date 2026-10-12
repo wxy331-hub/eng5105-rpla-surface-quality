@@ -11,16 +11,18 @@ export class Week7ApiError extends Error {
 
 /** The sample workbench talks only to this adapter; importing it makes no requests. */
 export class Week7DataSource {
-  constructor({ baseUrl = "http://127.0.0.1:8766", fetchImpl = globalThis.fetch.bind(globalThis) } = {}) {
+  constructor({ baseUrl = "http://127.0.0.1:8765", fetchImpl = globalThis.fetch.bind(globalThis) } = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.fetchImpl = fetchImpl;
   }
 
-  async request(path, body, method = body === undefined ? "GET" : "POST") {
+  async request(path, body, method = body === undefined ? "GET" : "POST", prefix = "/api/week7") {
     let response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}/api/week7${path}`, {
+      response = await this.fetchImpl(`${this.baseUrl}${prefix}${path}`, {
         method,
+        cache: "no-store",
+        signal: AbortSignal.timeout(path === "/health" ? 3500 : 15000),
         headers: body === undefined ? { Accept: "application/json" } : {
           Accept: "application/json", "Content-Type": "application/json",
         },
@@ -45,11 +47,22 @@ export class Week7DataSource {
 
   async getHealth() {
     const payload = await this.request("/health");
-    if (!Array.isArray(payload.image_size_px) || payload.image_size_px.length !== 2
-      || !payload.image_size_px.every((value) => Number.isInteger(value) && value > 0)) {
+    const pendingCamera = payload.camera && payload.camera.capture_available === false
+      && (payload.image_size_px == null || (Array.isArray(payload.image_size_px)
+        && payload.image_size_px.length === 2 && payload.image_size_px.every((value) => value == null || value === 0)));
+    if (!pendingCamera && (!Array.isArray(payload.image_size_px) || payload.image_size_px.length !== 2
+      || !payload.image_size_px.every((value) => Number.isInteger(value) && value > 0))) {
       throw new Week7ApiError("Invalid capture configuration response");
     }
     return payload;
+  }
+
+  reconnect() {
+    return this.request("/reconnect", undefined, "POST", "/api/control");
+  }
+
+  previewUrl(revision = 0) {
+    return `${this.baseUrl}/api/stream.mjpg?session=${encodeURIComponent(revision)}`;
   }
 
   createSample(sampleId) {
@@ -95,5 +108,19 @@ export class Week7DataSource {
 }
 
 export const week7DataSource = new Week7DataSource({
-  baseUrl: import.meta.env?.VITE_WEEK7_API_URL?.trim() || "http://127.0.0.1:8766",
+  baseUrl: import.meta.env?.VITE_SAMPLE_API_URL?.trim() || import.meta.env?.VITE_WEEK7_API_URL?.trim()
+    || import.meta.env?.VITE_INSPECTION_API_URL?.trim() || "http://127.0.0.1:8765",
 });
+
+/** Camera capture requires an explicit fresh-state grant; old synthetic APIs stay opt-in. */
+export function sampleCaptureState(health) {
+  const synthetic = health?.evidence_label === "OFFLINE_SYNTHETIC_ONLY";
+  const camera = health?.camera;
+  return {
+    synthetic,
+    connected: camera?.connected === true,
+    available: synthetic ? Boolean(health) : camera?.connected === true && camera?.capture_available === true,
+    status: camera?.status || (synthetic ? "SYNTHETIC" : "DISCONNECTED"),
+    sourceName: health?.source_name || camera?.source_name || null,
+  };
+}

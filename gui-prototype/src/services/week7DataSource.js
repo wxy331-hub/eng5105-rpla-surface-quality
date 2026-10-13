@@ -22,7 +22,9 @@ export class Week7DataSource {
       response = await this.fetchImpl(`${this.baseUrl}${prefix}${path}`, {
         method,
         cache: "no-store",
-        signal: AbortSignal.timeout(path === "/health" ? 3500 : 15000),
+        // A capture inspects a 4K frame and writes two PNGs; on a Raspberry Pi 4B
+        // the inspection alone took about 4.7 s (2026-10-13), so allow a minute.
+        signal: AbortSignal.timeout(path === "/health" ? 3500 : 60000),
         headers: body === undefined ? { Accept: "application/json" } : {
           Accept: "application/json", "Content-Type": "application/json",
         },
@@ -61,8 +63,10 @@ export class Week7DataSource {
     return this.request("/reconnect", undefined, "POST", "/api/control");
   }
 
-  previewUrl(revision = 0) {
-    return `${this.baseUrl}/api/stream.mjpg?session=${encodeURIComponent(revision)}`;
+  /** previewPath comes from the service health; a split-preview service names its unanalysed live stream. */
+  previewUrl(revision = 0, previewPath = null) {
+    const path = typeof previewPath === "string" && previewPath.startsWith("/api/") ? previewPath : "/api/stream.mjpg";
+    return `${this.baseUrl}${path}?session=${encodeURIComponent(revision)}`;
   }
 
   createSample(sampleId) {
@@ -108,7 +112,10 @@ export class Week7DataSource {
 }
 
 export const week7DataSource = new Week7DataSource({
-  baseUrl: import.meta.env?.VITE_SAMPLE_API_URL?.trim() || import.meta.env?.VITE_WEEK7_API_URL?.trim()
+  // A same-origin build is served by the camera service itself (Raspberry Pi
+  // demonstration), so another computer's browser must not fall back to its own 127.0.0.1.
+  baseUrl: (import.meta.env?.VITE_SERVICE_SAME_ORIGIN === "1" ? globalThis.location?.origin : null)
+    || import.meta.env?.VITE_SAMPLE_API_URL?.trim() || import.meta.env?.VITE_WEEK7_API_URL?.trim()
     || import.meta.env?.VITE_INSPECTION_API_URL?.trim() || "http://127.0.0.1:8765",
 });
 

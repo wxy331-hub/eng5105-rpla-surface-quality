@@ -335,8 +335,13 @@ export function createLiveEvidenceSnapshot(summary, rawDetections, imageUrl, { s
   };
 }
 
-const serviceApiUrl = import.meta.env?.VITE_INSPECTION_API_URL?.trim() || "http://127.0.0.1:8765";
-const serviceWsUrl = import.meta.env?.VITE_INSPECTION_WS_URL?.trim()
+// A build with VITE_SERVICE_SAME_ORIGIN=1 is served by the camera service itself
+// (Raspberry Pi demonstration): a browser on another computer talks to the host it
+// loaded the page from. An empty VITE_* URL would instead fall back to its own 127.0.0.1.
+const serviceSameOrigin = import.meta.env?.VITE_SERVICE_SAME_ORIGIN === "1";
+const serviceApiUrl = (serviceSameOrigin ? globalThis.location?.origin : import.meta.env?.VITE_INSPECTION_API_URL?.trim())
+  || "http://127.0.0.1:8765";
+const serviceWsUrl = (serviceSameOrigin ? null : import.meta.env?.VITE_INSPECTION_WS_URL?.trim())
   || `${serviceApiUrl.replace(/^http/, "ws")}/ws`;
 
 export class ServiceInspectionDataSource extends InspectionDataSource {
@@ -467,10 +472,20 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
     this.#lastPayloadAt = Date.now();
     const live = createLiveEvidenceSnapshot(payload.summary, payload.detections,
       `${this.#apiUrl}/api/frame.jpg?t=${payload.summary.current_frame_id ?? "waiting"}`, { serviceFrame: true });
+    // Split preview (Raspberry Pi demonstration): the analysed frame changes only
+    // every few seconds, so it is fetched once per frame id instead of over MJPEG;
+    // the unanalysed live picture comes from its own stream while the camera is healthy.
+    const split = payload.summary.split_preview ?? null;
     this.#snapshot = {
       ...live,
       mode: "LIVE DETECTION",
-      streamUrl: live.currentFrameAvailable ? `${this.#apiUrl}/api/stream.mjpg` : null,
+      streamUrl: live.currentFrameAvailable && !split ? `${this.#apiUrl}/api/stream.mjpg` : null,
+      splitPreview: split && {
+        previewUrl: live.cameraState === "HEALTHY" ? `${this.#apiUrl}${split.preview_path}` : null,
+        analysisAgeMs: payload.summary.frame_age_ms ?? null,
+        analysisStaleAfterMs: split.analysis_stale_after_ms,
+        interpretation: split.interpretation,
+      },
     };
     this.#defects = this.#snapshot.defects;
     this.#emit();
@@ -479,7 +494,7 @@ export class ServiceInspectionDataSource extends InspectionDataSource {
   #unavailable(state, message) {
     this.#snapshot = {
       ...this.#snapshot, cameraState: state, automaticActionsAllowed: false, serviceAvailable: false,
-      currentFrameAvailable: false, currentDetection: null, imageUrl: null, streamUrl: null,
+      currentFrameAvailable: false, currentDetection: null, imageUrl: null, streamUrl: null, splitPreview: null,
       viewInspection: null, processingLatencyMs: null, postDecodeToGuiLatencyMs: null, measuredFps: null,
       currentStep: { event: state === "RECONNECTING" ? "LIVE_SERVICE_RECONNECTING" : "LIVE_SERVICE_UNAVAILABLE", state },
       loadError: message ?? null,

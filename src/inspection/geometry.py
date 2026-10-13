@@ -543,7 +543,9 @@ def analyse_geometry(image: np.ndarray, params: GeometryParams) -> GeometryOutco
     for axis in axes:
         attempt_work = image[y:y + h, x:x + w]
         if axis == "horizontal":
-            attempt_work = np.ascontiguousarray(attempt_work.transpose(1, 0, 2))
+            # Same pixels as np.ascontiguousarray(transpose(1, 0, 2)), which took
+            # about 0.4 s for a 4K frame on a Raspberry Pi 4B (2026-10-13).
+            attempt_work = cv2.transpose(attempt_work)
         attempt_metrics: dict[str, Any] = {"search_roi_px": list(roi), "filament_axis": axis}
         attempt = _coarse_localise(attempt_work, params, attempt_metrics)
         tilt = math.inf

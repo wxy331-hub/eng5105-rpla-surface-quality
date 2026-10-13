@@ -236,6 +236,9 @@ test("camera preview and reconnect share the capture service origin", async () =
   const calls = [];
   const source = new Week7DataSource({ fetchImpl: async (url, options) => { calls.push({ url, options }); return response({ status: "RECONNECTING" }); } });
   assert.equal(source.previewUrl(3), "http://127.0.0.1:8765/api/stream.mjpg?session=3");
+  // A split-preview service (Raspberry Pi) names its unanalysed live stream; only API paths are taken.
+  assert.equal(source.previewUrl(3, "/api/preview.mjpg"), "http://127.0.0.1:8765/api/preview.mjpg?session=3");
+  assert.equal(source.previewUrl(3, "http://elsewhere/x"), "http://127.0.0.1:8765/api/stream.mjpg?session=3");
   await source.reconnect();
   assert.equal(calls[0].url, "http://127.0.0.1:8765/api/control/reconnect");
   assert.equal(calls[0].options.method, "POST");

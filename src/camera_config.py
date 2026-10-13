@@ -57,6 +57,10 @@ class LiveServiceConfig:
     vision_algorithm: str = "baseline_threshold"
     static_options: dict[str, Any] = field(default_factory=dict)
     surface_options: dict[str, Any] = field(default_factory=dict)
+    # Raspberry Pi demonstration mode (RPLA_SPLIT_PREVIEW=1): raw frames carry
+    # camera health and a reduced live preview; analysis is published separately
+    # under a longer budget. See live_service.SPLIT_ANALYSIS_STALE_AFTER_S.
+    split_preview: bool = False
 
     @property
     def stream_url(self) -> str:
@@ -210,4 +214,5 @@ def load_service_config(path: Path | None = None) -> LiveServiceConfig:
         disconnect_after_s=float(raw.get("disconnect_after_s", 2.0)), recovery_frames=int(raw.get("recovery_frames", 3)),
         cors_allow_origins=cors_origins, database_path=database_path,
         vision_algorithm=vision_algorithm, static_options=static_options, surface_options=surface_options,
+        split_preview=os.getenv("RPLA_SPLIT_PREVIEW", "").strip() == "1",
     )

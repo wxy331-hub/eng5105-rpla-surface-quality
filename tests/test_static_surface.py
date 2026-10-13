@@ -659,3 +659,32 @@ def test_mostly_defects_keeps_the_unexcluded_streak_metric():
     assert math.isfinite(outcome.metrics["longitudinal_energy"])
     assert outcome.comparison["quality_label"] == "demo_clearly_rough"
 
+
+
+def test_local_dilation_equals_whole_mask_dilation():
+    # The defect exclusion dilates by 2 s; done on the whole 4K strip it took
+    # about 7 s on a Raspberry Pi 4B (2026-10-13). The local version must be
+    # pixel-identical, including regions on the image edge and overlapping growth.
+    from src.inspection.surface import _dilate
+
+    rng = np.random.default_rng(20261013)
+    for trial in range(30):
+        height, width = int(rng.integers(20, 300)), int(rng.integers(20, 300))
+        mask = np.zeros((height, width), bool)
+        for _ in range(int(rng.integers(0, 6))):
+            y, x = int(rng.integers(0, height)), int(rng.integers(0, width))
+            h, w = int(rng.integers(1, 40)), int(rng.integers(1, 40))
+            mask[y:y + h, x:x + w] = True
+        mask |= rng.random((height, width)) < rng.choice([0.0, 0.001, 0.02])
+        radius = int(rng.choice([1, 2, 5, 17, 60, 120]))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+        expected = cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
+        assert np.array_equal(_dilate(mask, radius), expected), (trial, radius)
+    # Large masks with a few small regions take the local path.
+    for shape, boxes, radius in (((2160, 747), [(1751, 448, 70, 84)], 120),
+                                 ((900, 600), [(0, 0, 30, 20), (850, 580, 50, 20), (400, 300, 5, 5)], 60)):
+        mask = np.zeros(shape, bool)
+        for y, x, h, w in boxes:
+            mask[y:y + h, x:x + w] = True
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+        assert np.array_equal(_dilate(mask, radius), cv2.dilate(mask.astype(np.uint8), kernel).astype(bool))

@@ -380,6 +380,28 @@ test("WebSocket loss clears live imagery and reconnect failure stays visible", a
   } finally { unsubscribe(); }
 });
 
+test("split preview shows the analysed frame by id and the unanalysed live stream apart", async () => {
+  // Raspberry Pi demonstration: analysis lags by seconds; its 4K frame is not resent over MJPEG.
+  const payload = { summary: { ...summary, camera_state: "HEALTHY", current_frame_id: 4, frame_age_ms: 6200,
+    stale_after_ms: 15000, automatic_actions_allowed: true,
+    split_preview: { preview_path: "/api/preview.mjpg", analysis_stale_after_ms: 15000, interpretation: "Pi demo" } },
+  detections: [] };
+  const source = new ServiceInspectionDataSource({
+    baseUrl: "http://192.168.0.8:8765",
+    fetchImpl: async () => ({ ok: true, json: async () => payload }),
+    socketFactory: () => ({ readyState: 1, close() {} }),
+  });
+  const unsubscribe = source.subscribe(() => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    const snapshot = source.getSnapshot();
+    assert.equal(snapshot.streamUrl, null);
+    assert.equal(snapshot.imageUrl, "http://192.168.0.8:8765/api/frame.jpg?t=4");
+    assert.equal(snapshot.splitPreview.previewUrl, "http://192.168.0.8:8765/api/preview.mjpg");
+    assert.equal(snapshot.splitPreview.analysisAgeMs, 6200);
+  } finally { unsubscribe(); }
+});
+
 test("an unsubscribed HTTP result cannot restore a disconnected service or open a socket", async () => {
   let resolveFetch;
   let socketCalls = 0;

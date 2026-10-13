@@ -405,6 +405,9 @@ button { color: inherit; }
 }
 .inspection-sidebar { display: grid; gap: 16px; min-width: 0; }
 .dashboard-view > .events-card, .dashboard-view > .kpi-surface { grid-column: 1 / -1; }
+/* Split preview (Raspberry Pi demonstration): the unanalysed live picture. */
+.live-preview-card__image { display: block; width: 100%; height: auto; background: var(--ink-deep); }
+.camera-stage__frame img.camera-stage__image--previous { opacity: 0.35; }
 
 .panel {
   min-width: 0;

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
 
 from src.camera_config import LiveServiceConfig, PROJECT_ROOT, load_service_config
 from src.live_service import CameraCaptureError, InspectionRuntime, create_app as create_live_app
@@ -19,8 +21,14 @@ from src.week8.workflow import CameraSampleWorkflow
 
 def create_app(root: Path, *, runtime: InspectionRuntime | None = None,
                config: LiveServiceConfig | None = None, capture_timeout_s: float = 5.0,
-               connect_on_start: bool = True) -> FastAPI:
-    """Compose existing REST/WS/MJPEG and sample contracts around one camera."""
+               connect_on_start: bool = True, gui_dir: Path | None = None) -> FastAPI:
+    """Compose existing REST/WS/MJPEG and sample contracts around one camera.
+
+    gui_dir serves a built GUI (gui-prototype/dist/client) from the same origin,
+    so a browser on another computer needs only this one address.
+    """
+    if gui_dir is not None and not (Path(gui_dir) / "index.html").is_file():
+        raise FileNotFoundError(f"built GUI not found: {Path(gui_dir) / 'index.html'}")
     root = Path(root).resolve()
     if runtime is None:
         selected = config or load_service_config()
@@ -52,7 +60,28 @@ def create_app(root: Path, *, runtime: InspectionRuntime | None = None,
     async def unavailable(_: Request, exc: CameraCaptureError):
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
+    if gui_dir is not None:
+        # Mounted last so every API and WebSocket route above keeps precedence.
+        app.mount("/", StaticFiles(directory=gui_dir, html=True), name="gui")
     return app
+
+
+class ServiceServer(uvicorn.Server):
+    """Ends open MJPEG and WebSocket loops when shutdown starts.
+
+    Otherwise an open browser held Ctrl+C at "Waiting for connections to close"
+    (Raspberry Pi, 2026-10-13). A short graceful-shutdown timeout would also
+    cancel a capture still being analysed or written (Codex review 2026-10-13),
+    so the timeout stays only as a long backstop for a stream stuck on a dead socket.
+    """
+
+    def __init__(self, config: uvicorn.Config, runtime: InspectionRuntime) -> None:
+        super().__init__(config)
+        self.runtime = runtime
+
+    async def shutdown(self, sockets=None) -> None:
+        self.runtime.close_streams()
+        await super().shutdown(sockets=sockets)
 
 
 def main() -> None:
@@ -64,12 +93,15 @@ def main() -> None:
     parser.add_argument("--capture-timeout", type=float, default=5.0)
     parser.add_argument("--wait-for-camera", action="store_true",
                         help="Start the UI/API without opening a camera until Connect is pressed")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Listen address; 0.0.0.0 only for the Raspberry Pi demonstration on a trusted LAN")
+    parser.add_argument("--gui-dir", type=Path, help="Serve a built GUI from this directory on the same port")
     args = parser.parse_args()
     os.environ["RPLA_SOURCE_TYPE"] = args.source_type
-    import uvicorn
-    uvicorn.run(create_app(args.output, capture_timeout_s=args.capture_timeout,
-                           connect_on_start=not args.wait_for_camera),
-                host="127.0.0.1", port=args.port)
+    app = create_app(args.output, capture_timeout_s=args.capture_timeout,
+                     connect_on_start=not args.wait_for_camera, gui_dir=args.gui_dir)
+    ServiceServer(uvicorn.Config(app, host=args.host, port=args.port, timeout_graceful_shutdown=30),
+                  app.state.runtime).run()
 
 
 if __name__ == "__main__":

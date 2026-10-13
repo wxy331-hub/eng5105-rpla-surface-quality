@@ -46,6 +46,20 @@ from src.week4.uvc import UsbUvcSource
 
 DATA_MODE = "LIVE_CONTINUOUS_CANDIDATE_ONLY"
 
+# Raspberry Pi demonstration (config.split_preview, RPLA_SPLIT_PREVIEW=1). A Pi
+# 4B took about 4.7 s to inspect one 4K frame (2026-10-13), so under the 1 s
+# freshness budget no analysed frame was ever published and the camera never
+# became capture-ready. In this mode raw frames carry camera health and capture
+# readiness under stale_after_s as before, a reduced raw preview is streamed
+# without analysis, and the latest analysis stays published while its input
+# frame is younger than SPLIT_ANALYSIS_STALE_AFTER_S. It does not meet R4 (1 s).
+SPLIT_PREVIEW_FPS = 5.0
+SPLIT_PREVIEW_WIDTH_PX = 960
+# The shown analysis is between one and two processing times old: about 5.5 s
+# per frame with a marked specimen in the service, more while a capture is
+# analysed alongside (Pi 4B, 2026-10-13).
+SPLIT_ANALYSIS_STALE_AFTER_S = 20.0
+
 
 class CameraCaptureError(RuntimeError):
     """A requested sample could not obtain a fresh, healthy camera frame."""
@@ -183,6 +197,17 @@ class InspectionRuntime:
         self._last_frame_processed_at_utc: str | None = None
         self._last_processing_latency_ms: float | None = None
         self._started_at = time.monotonic()
+        # Split mode only: the reduced raw preview, versioned apart from the
+        # analysed frame so raw frames do not resend the analysed JPEG.
+        self._preview_condition = threading.Condition(self._lock)
+        self._preview_jpeg: bytes | None = None
+        self._preview_version = 0
+        self._preview_due = 0.0
+        self._analysis_stale_after_s = (SPLIT_ANALYSIS_STALE_AFTER_S if config.split_preview
+                                        else config.stale_after_s)
+        # Set when the server starts shutting down: open MJPEG and WebSocket
+        # loops end, while finite requests such as a capture still complete.
+        self._streams_closing = threading.Event()
 
     def _make_capture(self, url: str) -> Any:
         capture = cv2.VideoCapture()
@@ -246,11 +271,16 @@ class InspectionRuntime:
         with self._condition:
             self._condition.notify_all()
             self._raw_condition.notify_all()
+            self._preview_condition.notify_all()
         with self._buffer_condition:
             self._buffer_condition.notify_all()
         for thread in (self._thread, self._process_thread):
             if thread:
                 thread.join(timeout=timeout_s)
+
+    def close_streams(self) -> None:
+        """End the open MJPEG and WebSocket loops; the camera keeps running."""
+        self._streams_closing.set()
 
     def request_reconnect(self) -> None:
         self._set_state(CameraState.RECONNECTING)
@@ -286,12 +316,14 @@ class InspectionRuntime:
                 self._jpeg = None
                 self._view_inspection = None
                 self._published_monotonic = None
+                self._preview_jpeg = None
             self._state = state
             self._health_breaks += state is not CameraState.HEALTHY
             self._last_error = error
             self._frame_version += 1
             self._condition.notify_all()
             self._raw_condition.notify_all()
+            self._preview_condition.notify_all()
 
     def _queue_event(self, event_type: str, details: dict[str, Any]) -> None:
         """Hand an event to the processing thread, which owns the database."""
@@ -316,12 +348,46 @@ class InspectionRuntime:
             self._raw_sequence += 1
             self._raw_generation = generation
             self._raw_acquired_monotonic = read_completed
+            if self.config.split_preview:
+                # Raw frames, not finished analyses, carry service health here.
+                # Only a state change bumps the frame version: raw frames must
+                # not resend the analysed JPEG to every stream client.
+                self._monitor.poll(read_completed)
+                state = self._monitor.frame_received(read_completed)
+                if packet.camera_state is not CameraState.HEALTHY:
+                    state = packet.camera_state
+                if state is not self._state:
+                    self._state = state
+                    if state is CameraState.HEALTHY:
+                        self._last_error = None
+                    self._frame_version += 1
+                    self._condition.notify_all()
             self._raw_condition.notify_all()
             with self._buffer_condition:
                 self._buffer.put(packet)
                 self._buffer_generation = generation
                 self._buffer_acquired_monotonic = read_completed
                 self._buffer_condition.notify()
+
+    def _publish_preview(self, packet: FramePacket, generation: int) -> None:
+        """Split mode: encode a reduced raw frame for the live preview stream."""
+        now = time.perf_counter()
+        if now < self._preview_due:
+            return
+        self._preview_due = now + 1.0 / SPLIT_PREVIEW_FPS
+        height, width = packet.image.shape[:2]
+        preview_width = min(width, SPLIT_PREVIEW_WIDTH_PX)
+        small = cv2.resize(packet.image, (preview_width, max(1, round(height * preview_width / width))),
+                           interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, self.config.jpeg_quality])
+        if not ok:
+            raise OSError("could not encode the live preview frame")
+        with self._condition:
+            if generation != self._connection_generation or self._state is not CameraState.HEALTHY:
+                return
+            self._preview_jpeg = encoded.tobytes()
+            self._preview_version += 1
+            self._preview_condition.notify_all()
 
     def _take_frame(self, timeout_s: float) -> FramePacket | None:
         item = self._take_buffered_frame(timeout_s)
@@ -345,7 +411,9 @@ class InspectionRuntime:
     def _age_out(self) -> None:
         """Downgrade health when the newest frame we hold has aged past policy."""
         with self._condition:
-            if self._last_frame_monotonic is None:
+            # In split mode raw frames feed the monitor, so a stall is detected
+            # before the first analysis has finished.
+            if (self._raw_acquired_monotonic if self.config.split_preview else self._last_frame_monotonic) is None:
                 return
             state = self._monitor.poll(time.perf_counter())
             # An acquisition-side CONNECTING/RECONNECTING notice outranks a
@@ -358,16 +426,20 @@ class InspectionRuntime:
                     self._jpeg = None
                     self._view_inspection = None
                     self._published_monotonic = None
+                    self._preview_jpeg = None
                 self._frame_version += 1
                 self._condition.notify_all()
                 self._raw_condition.notify_all()
+                self._preview_condition.notify_all()
             # Frames can keep arriving while none of them finishes processing in
             # time (each is discarded as stale). The published result then
             # belongs to an ever older frame and must not stay current. Normal
             # replacement happens every processing cycle, so anything older
-            # than two frame budgets means processing is not keeping up.
+            # than two frame budgets means processing is not keeping up. Split
+            # mode states its analysis budget directly.
+            budget = self._analysis_stale_after_s if self.config.split_preview else 2 * self.config.stale_after_s
             if (self._published_monotonic is not None
-                    and time.perf_counter() - self._published_monotonic >= 2 * self.config.stale_after_s):
+                    and time.perf_counter() - self._published_monotonic >= budget):
                 self._jpeg = None
                 self._view_inspection = None
                 self._published_monotonic = None
@@ -389,13 +461,20 @@ class InspectionRuntime:
                     self._camera_configured = True
                     self._reported_properties = dict(getattr(source, "reported_properties", {}))
                     generation = self._connection_generation
+                    # Cleared with the generation it belongs to. Cleared after the
+                    # lock, a reconnect requested in between was lost: its newer
+                    # generation rejected every frame of this connection and the
+                    # service stayed RECONNECTING (Codex review 2026-10-13).
+                    self._reconnect_event.clear()
                 self._queue_event(
                     "LIVE_SERVICE_CAMERA_CONNECTED",
                     {"source_type": self.config.source_type, **self.config.connection_details, "batch_id": self.batch_id},
                 )
-                self._reconnect_event.clear()
                 while not self._stop_event.is_set() and not self._reconnect_event.is_set():
-                    self._publish_frame(next(source.frames(1)), generation)
+                    packet = next(source.frames(1))
+                    self._publish_frame(packet, generation)
+                    if self.config.split_preview:
+                        self._publish_preview(packet, generation)
             except Exception as exc:  # Camera faults must keep the service alive.
                 with self._condition:
                     self._camera_configured = False
@@ -455,7 +534,7 @@ class InspectionRuntime:
             generation = self._connection_generation if generation is None else generation
             if generation != self._connection_generation:
                 return
-            if processing_started - acquired_monotonic >= self.config.stale_after_s:
+            if processing_started - acquired_monotonic >= self._analysis_stale_after_s:
                 self._age_out()
                 return
         image = packet.image
@@ -474,8 +553,11 @@ class InspectionRuntime:
         with self._lock:
             if generation != self._connection_generation:
                 return
-            self._monitor.poll(acquired_monotonic)
-            service_state = self._monitor.frame_received(acquired_monotonic)
+            if self.config.split_preview:
+                service_state = self._state  # already decided from raw frames
+            else:
+                self._monitor.poll(acquired_monotonic)
+                service_state = self._monitor.frame_received(acquired_monotonic)
             self._last_frame_monotonic = acquired_monotonic
         effective_state = (
             service_state if packet.camera_state is CameraState.HEALTHY else packet.camera_state
@@ -553,13 +635,22 @@ class InspectionRuntime:
             if generation != self._connection_generation:
                 return
             # A newer raw frame cannot refresh the frame being committed here.
-            if time.perf_counter() - acquired_monotonic >= self.config.stale_after_s:
+            if time.perf_counter() - acquired_monotonic >= self._analysis_stale_after_s:
                 self._age_out()
                 return
+            # In split mode raw frames own the state; an analysis of a frame taken
+            # during recovery, or finished after the camera stalled, is not shown.
+            # Refresh first: with no client polling, a stall during this analysis
+            # is otherwise still cached as HEALTHY (Codex review 2026-10-13).
+            if self.config.split_preview:
+                self._age_out()
+                if self._state is not CameraState.HEALTHY or packet.camera_state is not CameraState.HEALTHY:
+                    return
             if repository is not None:
                 for record in records:
                     repository.append_detection(record)
-            self._state = packet.camera_state
+            if not self.config.split_preview:
+                self._state = packet.camera_state
             self._last_error = None
             self._width = width
             self._height = height
@@ -616,6 +707,7 @@ class InspectionRuntime:
                 "measured_pipeline_fps": self._fps(),
                 "frame_width_px": self._width, "frame_height_px": self._height,
                 "hardware_stream_verified": self._hardware_source and self._frames_received > 0,
+                "preview_path": "/api/preview.mjpg" if self.config.split_preview else None,
             }
 
     def capture_fresh_frame(self, timeout_s: float = 5.0) -> CameraFrameLease:
@@ -733,16 +825,19 @@ class InspectionRuntime:
     def snapshot_payload(self) -> dict[str, Any]:
         with self._lock:
             self._age_out()
-            frame_age_ms = (
-                None
-                if self._last_frame_monotonic is None
-                else round((time.perf_counter() - self._last_frame_monotonic) * 1000, 1)
-            )
+            split = self.config.split_preview
+            # In split mode the frame on display is the published analysis, which
+            # lags the camera by its processing time; report that frame's age.
+            age_from = self._published_monotonic if split else self._last_frame_monotonic
+            frame_age_ms = None if age_from is None else round((time.perf_counter() - age_from) * 1000, 1)
+            raw_age_ms = None if self._raw_acquired_monotonic is None else round(
+                (time.perf_counter() - self._raw_acquired_monotonic) * 1000, 1)
             # A located specimen whose frame the static branch rejected (for
             # example out of focus) is present but not judged: candidate
             # processing is not active and "no candidates" must not be implied.
             judged = self._view_inspection is None or self._view_inspection["geometry_status"] == "valid"
-            processing = self._state is CameraState.HEALTHY and self._target_present and judged
+            processing = (self._state is CameraState.HEALTHY and self._target_present and judged
+                          and (not split or self._published_monotonic is not None))
             summary = {
                 "status": "RUNNING" if self._state is CameraState.HEALTHY and self._target_present else "WAITING_FOR_MATERIAL" if self._state is CameraState.HEALTHY else "WAITING",
                 "evidence_level": DATA_MODE,
@@ -774,8 +869,18 @@ class InspectionRuntime:
                 "frame_received_at_utc": self._last_frame_received_at_utc,
                 "frame_processed_at_utc": self._last_frame_processed_at_utc,
                 "frame_age_ms": frame_age_ms,
-                "stale_after_ms": round(self.config.stale_after_s * 1000),
+                # The budget for the displayed frame: the analysis budget in split mode.
+                "stale_after_ms": round(self._analysis_stale_after_s * 1000),
                 "disconnect_after_ms": round(self.config.disconnect_after_s * 1000),
+                "split_preview": None if not split else {
+                    "preview_path": "/api/preview.mjpg",
+                    "preview_fps_target": SPLIT_PREVIEW_FPS,
+                    "raw_frame_age_ms": raw_age_ms,
+                    "raw_stale_after_ms": round(self.config.stale_after_s * 1000),
+                    "analysis_stale_after_ms": round(SPLIT_ANALYSIS_STALE_AFTER_S * 1000),
+                    "interpretation": "Raspberry Pi demonstration: the live preview is not analysed; the "
+                                      "analysed frame lags it by its processing time. Does not meet R4 (1 s).",
+                },
                 "processing_latency_ms": self._last_processing_latency_ms,
                 "snapshot_published_at_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                 "frame_width_px": self._width,
@@ -811,6 +916,15 @@ class InspectionRuntime:
             )
             self._age_out()
             return self._frame_version, self._jpeg
+
+    def wait_for_preview(self, after_version: int, timeout_s: float = 2.0) -> tuple[int, bytes | None]:
+        with self._preview_condition:
+            self._preview_condition.wait_for(
+                lambda: self._preview_version > after_version or self._stop_event.is_set(),
+                timeout=timeout_s,
+            )
+            self._age_out()
+            return self._preview_version, self._preview_jpeg
 
 
 SERVICE_CONFIG = load_service_config()
@@ -893,16 +1007,17 @@ def create_app(runtime: InspectionRuntime | None = None) -> FastAPI:
         return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
-    async def _mjpeg_frames(request: Request) -> AsyncIterator[bytes]:
+    async def _mjpeg_frames(request: Request,
+                            wait: Callable[[int, float], tuple[int, bytes | None]]) -> AsyncIterator[bytes]:
         runtime = current_runtime()
         version = -1
-        while not runtime._stop_event.is_set():
+        while not (runtime._stop_event.is_set() or runtime._streams_closing.is_set()):
             if await request.is_disconnected():
                 return
             # A synchronous iterator cannot yield to cancellation while no JPEG
             # exists. Keep the thread wait bounded and the stream cancellable so
             # a closed browser cannot hold graceful shutdown behind lifespan.
-            version, jpeg = await asyncio.to_thread(runtime.wait_for_jpeg, version, 0.2)
+            version, jpeg = await asyncio.to_thread(wait, version, 0.2)
             if jpeg is None:
                 continue
             yield (
@@ -917,7 +1032,19 @@ def create_app(runtime: InspectionRuntime | None = None) -> FastAPI:
     @app.get("/api/stream.mjpg")
     def stream(request: Request) -> StreamingResponse:
         return StreamingResponse(
-            _mjpeg_frames(request),
+            _mjpeg_frames(request, current_runtime().wait_for_jpeg),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+    @app.get("/api/preview.mjpg")
+    def preview(request: Request) -> StreamingResponse:
+        runtime = current_runtime()
+        if not runtime.config.split_preview:
+            raise HTTPException(status_code=404, detail="the unanalysed live preview is served only in split preview mode")
+        return StreamingResponse(
+            _mjpeg_frames(request, runtime.wait_for_preview),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store"},
         )
@@ -938,7 +1065,7 @@ def create_app(runtime: InspectionRuntime | None = None) -> FastAPI:
         last_version = -1
         last_sent = 0.0
         try:
-            while not runtime._stop_event.is_set():
+            while not (runtime._stop_event.is_set() or runtime._streams_closing.is_set()):
                 payload = runtime.snapshot_payload()
                 now = asyncio.get_running_loop().time()
                 if payload["version"] != last_version or now - last_sent >= 1.0:

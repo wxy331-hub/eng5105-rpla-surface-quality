@@ -483,3 +483,220 @@ def test_static_branch_archives_a_rejected_view_with_its_reasons(harness, tmp_pa
     assert preview["view_inspection"]["lighting"] == "operator_declared_bright_field"
     assert preview["view_inspection"]["surface"]["status"] == "rejected"
     assert preview["target_present"] is False
+
+
+# --- Raspberry Pi split preview (RPLA_SPLIT_PREVIEW=1) ------------------------
+# A Pi 4B took about 4.7 s per 4K inspection (2026-10-13). These budgets are
+# scaled down: raw frames every 30 ms, stale after 0.2 s, analysis 0.5 s.
+
+def short_budget_config(monkeypatch, tmp_path, split_preview):
+    for name in ("RPLA_RESOLUTION", "RPLA_FRAMESIZE", "RPLA_CAMERA_DEVICE", "RPLA_CONFIG_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RPLA_SOURCE_TYPE", "usb_uvc")
+    return replace(load_service_config(), expected_width_px=64, expected_height_px=48,
+                   roi_px=(0, 0, 64, 48), recovery_frames=2, stale_after_s=0.2,
+                   disconnect_after_s=0.4, reconnect_delay_s=0.01,
+                   database_path=tmp_path / "continuous.db", split_preview=split_preview)
+
+
+@contextmanager
+def streaming(harness, interval_s=0.03):
+    """A camera that keeps delivering raw frames, as the real one does."""
+    stop = threading.Event()
+
+    def run():
+        while not stop.wait(interval_s):
+            harness.deliver(wait_processed=False)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+
+
+def slowed(inspect, delay_s):
+    def slow(*args, **kwargs):
+        time.sleep(delay_s)
+        return inspect(*args, **kwargs)
+    return slow
+
+
+@pytest.mark.parametrize("split_preview", [True, False])
+def test_analysis_slower_than_the_frame_budget(monkeypatch, tmp_path, split_preview):
+    harness = Harness(short_budget_config(monkeypatch, tmp_path, split_preview))
+    processor = harness.runtime._processor
+    monkeypatch.setattr(processor, "inspect", slowed(processor.inspect, 0.5))
+    try:
+        with streaming(harness):
+            harness.runtime.start()
+            time.sleep(1.8)
+            summary = harness.runtime.snapshot_payload()["summary"]
+            jpeg = harness.runtime.latest_jpeg()[1]
+            health = harness.runtime.camera_health()
+    finally:
+        harness.close()
+    if split_preview:
+        # Raw frames keep the camera healthy and capture-ready; the analysis is
+        # shown with the age of the frame it belongs to.
+        assert jpeg is not None and summary["camera_state"] == "HEALTHY"
+        assert summary["view_inspection"] is not None
+        assert 400 <= summary["frame_age_ms"] <= summary["stale_after_ms"] == 20000
+        assert summary["split_preview"]["raw_stale_after_ms"] == 200
+        assert health["capture_available"] is True and health["preview_path"] == "/api/preview.mjpg"
+    else:
+        # The computer keeps its budget: no such analysis is ever shown (only
+        # unanalysed recovery frames are, as before).
+        assert summary["view_inspection"] is None
+        assert summary["split_preview"] is None and health["preview_path"] is None
+
+
+def test_split_preview_streams_raw_frames_and_withdraws_on_a_stall(monkeypatch, tmp_path):
+    harness = Harness(short_budget_config(monkeypatch, tmp_path, True))
+    release = threading.Event()
+    processor = harness.runtime._processor
+    inspect = processor.inspect
+    monkeypatch.setattr(processor, "inspect", lambda *args, **kwargs: (release.wait(5), inspect(*args, **kwargs))[1])
+    runtime = harness.runtime
+    try:
+        with streaming(harness):
+            runtime.start()
+            wait_until(lambda: runtime.camera_health()["capture_available"])
+            preview_version, preview = runtime.wait_for_preview(0, 1.0)
+            assert cv2.imdecode(np.frombuffer(preview, np.uint8), cv2.IMREAD_COLOR).shape == (48, 64, 3)
+            version = runtime.snapshot_payload()["version"]
+            time.sleep(0.3)
+            # Raw frames refresh the preview but must not resend the analysed JPEG.
+            assert runtime.snapshot_payload()["version"] == version
+            assert runtime.wait_for_preview(preview_version, 1.0)[0] > preview_version
+        # No analysis has finished; a stall is still detected from raw frames.
+        wait_until(lambda: runtime.camera_health()["status"] in {"STALE", "DISCONNECTED"})
+        assert runtime.camera_health()["capture_available"] is False
+        assert runtime.wait_for_preview(-1, 0.1)[1] is None
+    finally:
+        release.set()
+        harness.close()
+
+
+def test_split_preview_capture_archives_while_analysis_lags(monkeypatch, tmp_path):
+    harness = Harness(short_budget_config(monkeypatch, tmp_path, True))
+    processor = harness.runtime._processor
+    monkeypatch.setattr(processor, "inspect", slowed(processor.inspect, 0.5))
+    workflow = CameraSampleWorkflow(tmp_path / "sample", harness.runtime)
+    session = workflow.create_sample("pi-demo")["session_id"]
+    try:
+        with streaming(harness):
+            harness.runtime.start()
+            wait_until(lambda: harness.runtime.camera_health()["capture_available"])
+            result = workflow.capture_view(session, 0, "bright_field")
+    finally:
+        harness.close()
+    assert len(result["current_views"]) == 1
+    assert workflow.capture_configuration["split_preview"] is True
+
+
+def test_split_preview_is_off_by_default_and_not_frozen_into_computer_sessions(harness, tmp_path, monkeypatch):
+    assert harness.config.split_preview is False
+    assert "split_preview" not in CameraSampleWorkflow(tmp_path / "sample", harness.runtime).capture_configuration
+    monkeypatch.setenv("RPLA_SPLIT_PREVIEW", "1")
+    assert load_service_config().split_preview is True
+
+
+def test_preview_endpoint_and_built_gui_share_the_service_origin(harness, monkeypatch, tmp_path):
+    gui = tmp_path / "gui"
+    gui.mkdir()
+    (gui / "index.html").write_text("<html>rPLA</html>", encoding="utf-8")
+    with local_server(create_app(tmp_path / "api", runtime=harness.runtime, connect_on_start=False,
+                                 gui_dir=gui)) as base:
+        assert request(base, "/api/preview.mjpg")[0] == 404
+        assert request(base, "/")[1] == b"<html>rPLA</html>"
+        assert request(base, "/api/week7/health")[1]["mode"] == "plan_a_camera"
+    with pytest.raises(FileNotFoundError):
+        create_app(tmp_path / "api2", runtime=harness.runtime, gui_dir=tmp_path / "missing")
+
+    split = Harness(short_budget_config(monkeypatch, tmp_path, True))
+    try:
+        with streaming(split), local_server(create_app(tmp_path / "pi", runtime=split.runtime)) as base:
+            wait_until(lambda: split.runtime.camera_health()["capture_available"])
+            with urlopen(base + "/api/preview.mjpg", timeout=3) as preview:
+                assert b"Content-Type: image/jpeg" in preview.read(128)
+            assert request(base, "/api/week7/health")[1]["camera"]["preview_path"] == "/api/preview.mjpg"
+    finally:
+        split.close()
+
+
+def test_split_preview_does_not_commit_an_analysis_finished_after_a_stall(monkeypatch, tmp_path):
+    # Codex review 2026-10-13: with no client polling, the cached state was still
+    # HEALTHY when an analysis finished after the camera had stalled.
+    harness = Harness(short_budget_config(monkeypatch, tmp_path, True))
+    runtime = harness.runtime
+    started, finished = threading.Event(), threading.Event()
+    inspect = runtime._processor.inspect
+
+    def slow(*args, **kwargs):
+        started.set()
+        time.sleep(0.5)
+        result = inspect(*args, **kwargs)
+        finished.set()
+        return result
+
+    monkeypatch.setattr(runtime._processor, "inspect", slow)
+    try:
+        with streaming(harness):
+            runtime.start()
+            assert started.wait(3)
+        # The camera stops delivering while the analysis runs; nobody polls.
+        assert finished.wait(3)
+        time.sleep(0.1)
+        assert runtime._frames_received == 0 and runtime._jpeg is None
+    finally:
+        harness.close()
+
+
+def test_reconnect_requested_while_connecting_is_not_lost(harness, monkeypatch):
+    # Codex review 2026-10-13 (pre-existing): a reconnect requested between taking
+    # the connection generation and clearing the event left the service RECONNECTING.
+    runtime = harness.runtime
+    queue_event = runtime._queue_event
+    requested = []
+
+    def reconnect_once(event_type, details):
+        queue_event(event_type, details)
+        if event_type == "LIVE_SERVICE_CAMERA_CONNECTED" and not requested:
+            requested.append(True)
+            runtime.request_reconnect()
+
+    monkeypatch.setattr(runtime, "_queue_event", reconnect_once)
+    with streaming(harness):
+        runtime.start()
+        wait_until(lambda: runtime.camera_health()["capture_available"], timeout=5)
+    assert requested and harness.source.opens >= 2
+
+
+def test_shutdown_ends_open_streams_instead_of_waiting_for_the_browser(harness, tmp_path):
+    # An open MJPEG or WebSocket client held Ctrl+C on the Pi (2026-10-13). The
+    # 30 s graceful timeout is only a backstop; streams must end at once.
+    from src.week8_service import ServiceServer
+
+    app = create_app(tmp_path / "api", runtime=harness.runtime)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = ServiceServer(uvicorn.Config(app, log_level="error", timeout_graceful_shutdown=30), harness.runtime)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        wait_until(lambda: server.started)
+        stream = urlopen(f"http://127.0.0.1:{port}/api/stream.mjpg", timeout=5)
+        websocket = connect(f"ws://127.0.0.1:{port}/ws")
+        started = time.monotonic()
+        server.should_exit = True
+        thread.join(timeout=10)
+        assert not thread.is_alive() and time.monotonic() - started < 5
+        stream.close()
+        websocket.close()
+    finally:
+        server.should_exit = True
+        sock.close()

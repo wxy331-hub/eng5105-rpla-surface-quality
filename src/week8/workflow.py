@@ -42,6 +42,10 @@ class CameraSampleWorkflow:
         for key in ("database_path", "cors_allow_origins", "event_retention", "jpeg_quality",
                     "reconnect_delay_s", "open_timeout_ms", "read_timeout_ms"):
             acquisition.pop(key)
+        # Recorded only when on, so sessions frozen before this mode existed stay
+        # compatible on the computer that made them.
+        if not config.split_preview:
+            acquisition.pop("split_preview")
         self.capture_configuration = json.loads(json.dumps({
             **acquisition,
             "schema_version": 1, "evidence_label": self.evidence_label,

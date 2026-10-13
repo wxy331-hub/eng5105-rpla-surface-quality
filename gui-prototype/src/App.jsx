@@ -448,6 +448,14 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
   const imageUrl = directStreamActive ? directStreamUrl
     : isServiceMode && !selectedDetection && streamFailed ? null : evidenceImageUrl;
   // Requested capture modes never substitute for decoded image dimensions.
+  // Split preview keeps the previous analysed frame on screen while the next
+  // one loads; the frame number and grade already belong to the next one, so
+  // the old picture is dimmed and labelled until it is replaced (Codex review 2026-10-13).
+  const previousAnalysisShown = isServiceMode && Boolean(snapshot.splitPreview) && !directStreamActive
+    && !displayedEvidence.isSelectedRecord && Boolean(imageUrl) && decodedImage?.url !== imageUrl
+    && failedImage !== imageUrl;
+  // Without an image the element is unmounted; a later one starts with no previous picture.
+  useEffect(() => { if (!imageUrl) setDecodedImage(null); }, [imageUrl]);
   const displayedResolution = decodedImage?.url === imageUrl && failedImage !== imageUrl
     ? decodedImage.resolution
     : t("Waiting for frame");
@@ -479,8 +487,12 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
           <div className="camera-stage__frame" style={frameAspect ? { "--frame-aspect": frameAspect } : undefined}>
             {imageUrl
               ? <img
-                  key={`${imageUrl}:${streamRevision}`}
-                  className={directStreamActive ? "camera-stream" : undefined}
+                  // Split preview replaces the analysed frame every few seconds by URL.
+                  // Keeping the element lets the browser show the previous frame until
+                  // the next 4K JPEG has loaded, instead of a blank stage each time.
+                  key={snapshot.splitPreview && !directStreamActive && !displayedEvidence.isSelectedRecord
+                    ? "split-analysed-frame" : `${imageUrl}:${streamRevision}`}
+                  className={directStreamActive ? "camera-stream" : previousAnalysisShown ? "camera-stage__image--previous" : undefined}
                   src={imageUrl}
                   alt={t(directStreamActive ? "Live {source} inspection stream" : "Saved {source} image from frame {frame}",
                   { source: t(snapshot.source), frame: displayedEvidence.imageFrameNumber })}
@@ -488,7 +500,8 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
                     const { naturalWidth, naturalHeight } = event.currentTarget;
                     if (naturalWidth && naturalHeight) {
                       setFrameAspect(`${naturalWidth} / ${naturalHeight}`);
-                      setDecodedImage({ url: imageUrl, ...createResolutionMetadata({ widthPx: naturalWidth, heightPx: naturalHeight }) });
+                      // The element's own src: with a kept element this is the image that loaded.
+                      setDecodedImage({ url: event.currentTarget.getAttribute("src"), ...createResolutionMetadata({ widthPx: naturalWidth, heightPx: naturalHeight }) });
                       setFailedImage(null);
                     }
                   }}
@@ -501,6 +514,11 @@ function LiveCamera({ snapshot, selectedDetection, onReplay }) {
         {isServiceMode && snapshot.loadError ? <div className="frame-notice" role="alert">{snapshot.loadError}</div> : null}
         {blocked && !displayedEvidence.isSelectedRecord ? <div className="frame-notice"><Warning size={17} /> {t(isServiceMode && frameNotJudged(snapshot) ? "FRAME NOT JUDGED" : isServiceMode && snapshot.cameraState === "HEALTHY" ? "WAITING FOR MATERIAL" : "PROCESSING HOLD")} · {t(snapshot.cameraState)}{isServiceMode && manualInspectionAdvised(snapshot) ? <> · {t("Manual inspection recommended")}</> : null}</div> : null}
         {isServiceMode && !displayedEvidence.isSelectedRecord && demoGradeText(snapshot) ? <div className="frame-notice" role="status">{t(demoGradeText(snapshot))}</div> : null}
+        {isServiceMode && snapshot.splitPreview && !displayedEvidence.isSelectedRecord ? <div className="frame-notice" role="status">{previousAnalysisShown && decodedImage
+          ? t("Loading the next analysed frame · the dimmed picture is the previous one")
+          : Number.isFinite(snapshot.splitPreview.analysisAgeMs)
+          ? t("Analysed frame taken {age} s ago · the live preview is not analysed", { age: (snapshot.splitPreview.analysisAgeMs / 1000).toFixed(1) })
+          : t("Waiting for the first analysed frame")}</div> : null}
         <div className="camera-stage__footer">
           <span>ROI: {snapshot.roiPx.join(", ")} px</span>
           <span>{displayedEvidence.isSelectedRecord
@@ -688,6 +706,27 @@ function RecentCandidates({ events, rawCount, selectedId, onSelect, onDelete, on
   );
 }
 
+/**
+ * Split preview (Raspberry Pi demonstration): the unanalysed live picture, kept
+ * apart from the analysed frame so no box from an older frame lands on it.
+ */
+function LivePreview({ split }) {
+  const { t } = useI18n();
+  const [failed, setFailed] = useState(false);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => { setFailed(false); }, [split.previewUrl]);
+  const url = split.previewUrl && !failed ? `${split.previewUrl}?session=${revision}` : null;
+  return (
+    <Panel className="live-preview-card">
+      <PanelHeader title={t("Live preview · not analysed")} meta={t("Raspberry Pi demonstration · does not meet R4 (1 s)")}
+        action={<button className="button button--secondary" type="button" onClick={() => { setFailed(false); setRevision(Date.now()); }}><ArrowsClockwise size={16} /> {t("Reconnect")}</button>} />
+      {url
+        ? <img className="live-preview-card__image" src={url} alt={t("Live camera preview, not analysed")} onError={() => setFailed(true)} />
+        : <div className="camera-loading"><Camera size={28} /> {t(failed ? "Preview unavailable. Reconnect the preview." : "Waiting for a healthy camera.")}</div>}
+    </Panel>
+  );
+}
+
 function LiveView({ snapshot, events, rawEventCount, selectedEvent, setSelectedEvent, onReplay, onDelete, onClear }) {
   const detection = selectedEvent ?? (isLiveEvidence ? events.at(-1) : snapshot.currentDetection);
   return (
@@ -695,6 +734,7 @@ function LiveView({ snapshot, events, rawEventCount, selectedEvent, setSelectedE
       {isLiveEvidence ? <KpiRow snapshot={snapshot} eventCount={events.length} /> : null}
       <LiveCamera snapshot={snapshot} selectedDetection={selectedEvent} onReplay={onReplay} />
       <div className="inspection-sidebar">
+        {snapshot.splitPreview ? <LivePreview split={snapshot.splitPreview} /> : null}
         <LatestDetection detection={detection} snapshot={snapshot} selected={Boolean(selectedEvent)} />
         {!isLiveEvidence ? <SampleWorkflowSummary snapshot={snapshot} /> : null}
       </div>

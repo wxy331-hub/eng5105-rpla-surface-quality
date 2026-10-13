@@ -65,6 +65,7 @@ CONTAMINATION_DARKENING = 0.25  # relative darkening R <= -0.25
 CONTAMINATION_MAX_DIAMETER = 6.0  # times s
 DIRECTION_OFF_AXIS_DEG = 30.0
 TRANSVERSE_LINE_DEG = 60.0
+MAX_LOCAL_DILATE_REGIONS = 64  # above this, _dilate works on the whole mask
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +252,31 @@ def _region(ctx: GeometryContext, s: float) -> tuple[np.ndarray, dict[str, Any],
     return mask, coverage, None
 
 
+def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
+    """cv2.dilate by OpenCV's (2r+1) ellipse, computed around each set region.
+
+    Exactly the whole-mask result: dilation of a union is the union of the
+    dilations, no pixel more than r away along either axis changes, and the
+    border adds nothing to a dilation. On a 4K strip the 2 s defect exclusion
+    alone took about 7 s on a Raspberry Pi 4B (2026-10-13); one marker dot now
+    needs a crop of about (dot + 4 s) squared. Many regions (scattered glare
+    specks) or crops covering the mask anyway are dilated whole: region by
+    region was up to hundreds of times slower there (Codex review 2026-10-13).
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    height, width = mask.shape
+    windows = [(max(0, y - radius), min(height, y + h + radius), max(0, x - radius), min(width, x + w + radius))
+               for x, y, w, h in stats[1:, :4]]
+    if count - 1 > MAX_LOCAL_DILATE_REGIONS or sum((y1 - y0) * (x1 - x0) for y0, y1, x0, x1 in windows) >= mask.size:
+        return cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
+    out = np.zeros(mask.shape, bool)
+    for label, (y0, y1, x0, x1) in enumerate(windows, start=1):
+        piece = (labels[y0:y1, x0:x1] == label).astype(np.uint8)
+        out[y0:y1, x0:x1] |= cv2.dilate(piece, kernel).astype(bool)
+    return out
+
+
 def _components(binary: np.ndarray, support: np.ndarray, s: float):
     radius = max(1, int(round(s / 12)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
@@ -298,9 +324,7 @@ def analyse_surface(ctx: GeometryContext | None, geometry_status: str, geometry_
     # glare specks on the 2026-10-12 bench while only 2 % was saturated.)
     saturated = (grey <= 2 / 255) | (_channel_max(np.ascontiguousarray(crop)) >= 253)
     if saturated.any():
-        ring = max(1, int(math.ceil(s / 12)))
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ring + 1, 2 * ring + 1))
-        saturated = cv2.dilate(saturated.astype(np.uint8), kernel).astype(bool)
+        saturated = _dilate(saturated, max(1, int(math.ceil(s / 12))))
     support = region & ~saturated
     coverage["excluded_saturation_px"] = int((region & saturated).sum())
     rows_used = np.unique(np.nonzero(support)[0])
@@ -358,16 +382,12 @@ def analyse_surface(ctx: GeometryContext | None, geometry_status: str, geometry_
     # measured edge spread, not a tuning value.
     halo = np.zeros_like(saturated)
     if saturated.any():
-        r = max(2, int(math.ceil(np.nan_to_num(edge_spread, nan=2.0))))
-        disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
-        halo = cv2.dilate(saturated.astype(np.uint8), disc).astype(bool)
+        halo = _dilate(saturated, max(2, int(math.ceil(np.nan_to_num(edge_spread, nan=2.0)))))
     # Pixels clipped to black have no residual but are certainly dark: they
     # (with their exclusion ring) count as contamination evidence.
     black = region & (grey <= 2 / 255)
     if black.any():
-        ring = max(1, int(math.ceil(s / 12)))
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ring + 1, 2 * ring + 1))
-        black = cv2.dilate(black.astype(np.uint8), kernel).astype(bool) & region
+        black = _dilate(black, max(1, int(math.ceil(s / 12)))) & region
     contamination, claimed = _contamination_candidates(residual, usable, black, s, (x0, y0), ctx, reference)
     candidates, bright_structures, halos, reported = _local_candidates(
         residual, usable, tau, s, (x0, y0), ctx, reference, halo, claimed)
@@ -383,9 +403,7 @@ def analyse_surface(ctx: GeometryContext | None, geometry_status: str, geometry_
     measured = usable
     defects = claimed | reported
     if defects.any():
-        reach = int(math.ceil(2 * s))
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * reach + 1, 2 * reach + 1))
-        defects = cv2.dilate(defects.astype(np.uint8), kernel).astype(bool)
+        defects = _dilate(defects, int(math.ceil(2 * s)))
         clean = support & ~defects
         clean_streaks = (_masked_gaussian(normalised, clean, s / 6, s, coarse)
                          - _masked_gaussian(normalised, clean, s, s, coarse))

@@ -1,7 +1,7 @@
 # Final-report evidence record (October 2026)
 
 Measurements and test totals cited in the final design report. Each row states
-its evidence level. Code revision: `93ffe7a` unless stated. Raw images and logs
+its evidence level. Code revision: `5d5e68e` unless stated. Raw images and logs
 stay on the development host (`data/output/` is not version-controlled).
 
 ## 1. Environment
@@ -91,8 +91,27 @@ frames/s, about 40 KB per 960 × 540 frame) and the analysed frame with its age.
 Ctrl+C with two MJPEG streams open: exit in 2.9 s with
 "Application shutdown complete" (camera released). Live integration observation.
 
-## 7. Software verification at `93ffe7a`
+## 7. Software verification at `5d5e68e`
 
 - `python -m pytest -q`: 554 passed, 1 skipped (automated software tests).
 - `node --test` evidence/adapter suites in `gui-prototype`: 48 passed; Vite
   build passes.
+
+## 8. Lamp controller and watchdog (Pi, 2026-10-14)
+
+Board identified over SWD as STM32F446 (DBGMCU IDCODE `0x10006421`, 512 KB flash),
+i.e. NUCLEO-F446RE. The team's original firmware was read back in full before the
+board was reprogrammed with `firmware/stm32_lamp_watchdog` (16 MHz HSI, TIM1 ARR 799
+= 20 kHz with 800 duty steps on PA8, heartbeat watchdog, IWDG about 1 s). The Pi runs
+the bench scripts over the ST-LINK virtual COM port `/dev/ttyACM0`.
+
+| Test | Result | Evidence level |
+|---|---|---|
+| `bench/hb_test.py`, 10 scenarios | 10 passed: heartbeat stop → SUSPECT 0.52 s, lamp off 3.56 s; host TIMEOUT → off 3.02 s; 1.2 s stall recovered in 0.28 s without switching off; `HANG` → IWDG reset 1.06 s, restart in FAULT; port closed → lamp off | live integration observation (controller state reports) |
+| `bench/pwm_probe.py`, PA8 sampled 2000 times over SWD | high fraction 50.5 % / 20.4 % / 0.0 % for set duty 50 / 20 / 0 % | bench measurement (statistical sampling, not an oscilloscope) |
+| `scripts/lamp_watchdog.py` with the inspection service | lamp on 0.12 s after the service answered; service frozen (SIGSTOP) → lamp off 4.8 s later; resumed → on in 0.4 s; service stopped (SIGINT) → client exited within 1.5 s, controller in FAULT | live integration observation |
+| Nucleo USB unplugged with the lamp on | lamp went off | team observation |
+
+Direct Ethernet link: the Pi's wired connection runs in NetworkManager shared mode
+(`10.42.0.1`); the viewing computer received `10.42.0.135` by DHCP and showed the
+live interface. Default lamp duty for inspection is 30 %.

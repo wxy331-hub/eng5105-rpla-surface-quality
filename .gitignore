@@ -35,3 +35,9 @@ data/output/*
 !data/output/latency/
 !data/output/network_fault/
 logs/
+
+# Course materials (Monash copyright): kept locally, never published
+ENG5105-ENG5106 S2 2026 - Project Briefs_Rev0.pdf
+Electrical teams proposal report rubric 2026.pdf
+ENG5105 Components - With pictures 2026.pdf
+Concept design_ Discipline specific content.docx.pdf

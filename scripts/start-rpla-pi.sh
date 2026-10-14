@@ -23,6 +23,19 @@ export RPLA_RESOLUTION=UHD
 export RPLA_SPLIT_PREVIEW=1
 
 cd "$root"
+
+# STM32 lamp watchdog: heartbeats flow only while this service answers /api/health, so
+# the lamp switches off when the service or the Pi stops (scripts/lamp_watchdog.py).
+lamp_port="${RPLA_LAMP_PORT:-/dev/ttyACM0}"
+if [[ -e "$lamp_port" ]]; then
+  "$python" -B "$root/scripts/lamp_watchdog.py" --port "$lamp_port" &
+  lamp_pid=$!
+  trap 'kill "$lamp_pid" 2>/dev/null || true' EXIT
+else
+  echo "No lamp controller at $lamp_port; the lamp stays off." >&2
+fi
+
 echo "Open http://$(hostname -I | awk '{print $1}'):8765/ from a computer on this network."
-exec "$python" -B -m src.week8_service --host 0.0.0.0 --port 8765 \
+# Not exec: the shell stays to stop the lamp client when the service exits.
+"$python" -B -m src.week8_service --host 0.0.0.0 --port 8765 \
   --gui-dir "$gui" --output "$root/data/output/pi_demo"

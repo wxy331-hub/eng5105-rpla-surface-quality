@@ -94,6 +94,8 @@ Ctrl+C with two MJPEG streams open: exit in 2.9 s with
 ## 7. Software verification at `5d5e68e`
 
 - `python -m pytest -q`: 554 passed, 1 skipped (automated software tests).
+- With the lamp watchdog client and its tests (2026-10-14, final revision): 560 passed,
+  1 skipped.
 - `node --test` evidence/adapter suites in `gui-prototype`: 48 passed; Vite
   build passes.
 
